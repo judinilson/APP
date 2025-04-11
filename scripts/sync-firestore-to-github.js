@@ -1,322 +1,119 @@
-const { Octokit } = require("@octokit/rest");
-const admin = require("firebase-admin");
-const fs = require("fs");
-const path = require("path");
+async function main() {
+  console.log('Starting Firestore Feedback data export');
+  console.log('Current working directory:', process.cwd());
+  console.log('Logs directory absolute path:', path.resolve(LOGS_DIR));
 
-// Initialize Firebase Admin
-let serviceAccount;
-try {
-  // Get the service account from file
-  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  // Get all feedback items
+  const feedbackQuery = admin
+    .firestore()
+    .collection('feedback')
+    .orderBy('timestamp', 'desc')
+    .limit(50); // Increased limit since we're just exporting
 
-  if (!serviceAccountPath) {
-    throw new Error(
-      "FIREBASE_SERVICE_ACCOUNT_PATH environment variable is not set"
-    );
-  }
+  const snapshot = await feedbackQuery.get();
+  console.log(`Found ${snapshot.size} total feedback items`);
 
-  console.log(`Reading service account from: ${serviceAccountPath}`);
+  // Prepare data for export
+  const feedbackItems = await Promise.all(snapshot.docs.map(async (doc) => {
+    const data = doc.data();
+    const feedbackId = doc.id;
 
-  // Read and parse the service account file
-  try {
-    const fileContent = fs.readFileSync(serviceAccountPath, "utf8");
-    serviceAccount = JSON.parse(fileContent);
-  } catch (fileError) {
-    console.error(
-      `Error reading or parsing service account file: ${fileError.message}`
-    );
-    throw fileError;
-  }
-
-  // Verify that the service account has the required fields
-  if (
-    !serviceAccount.project_id ||
-    !serviceAccount.private_key ||
-    !serviceAccount.client_email
-  ) {
-    throw new Error("The service account is missing required fields");
-  }
-
-  console.log(
-    `Successfully loaded service account for project: ${serviceAccount.project_id}`
-  );
-} catch (error) {
-  console.error("Error loading Firebase service account:", error.message);
-  process.exit(1);
-}
-
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
-
-// Initialize GitHub client
-const octokit = new Octokit({
-  auth: process.env.GITHUB_TOKEN,
-});
-
-// Repository configuration
-const GITHUB_OWNER = process.env.GITHUB_OWNER || "judinilson";
-const GITHUB_REPO = process.env.GITHUB_REPO || "APP";
-const FEEDBACK_COLLECTION = "feedback";
-const SCREENSHOTS_COLLECTION = "feedback_screenshots";
-const DEFAULT_STATUS = "status:reportado";
-const FEEDBACK_LOG_FILE = "feedback_processing_log.json";
-
-// Create a directory for feedback logs and screenshots
-const LOGS_DIR = "feedback_logs";
-const SCREENSHOTS_DIR = path.join(LOGS_DIR, "screenshots");
-
-// Create directories if they don't exist
-if (!fs.existsSync(LOGS_DIR)) {
-  fs.mkdirSync(LOGS_DIR, { recursive: true });
-  console.log(`Created directory: ${LOGS_DIR}`);
-}
-
-if (!fs.existsSync(SCREENSHOTS_DIR)) {
-  fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-  console.log(`Created directory: ${SCREENSHOTS_DIR}`);
-}
-
-async function reconstructScreenshot(screenshotId) {
-  try {
-    // Get screenshot metadata
-    const screenshotDoc = await admin
-      .firestore()
-      .collection(SCREENSHOTS_COLLECTION)
-      .doc(screenshotId)
-      .get();
-
-    if (!screenshotDoc.exists) {
-      console.log(`Screenshot ${screenshotId} not found`);
-      return null;
+    // Handle screenshot if exists
+    let screenshotData = null;
+    if (data.screenshotId) {
+      try {
+        screenshotData = await reconstructScreenshot(data.screenshotId);
+        if (screenshotData) {
+          // Save screenshot locally
+          const localPath = await saveScreenshotLocally(screenshotData, feedbackId);
+          if (localPath) {
+            data.localScreenshotPath = localPath;
+          }
+        }
+      } catch (error) {
+        console.error(`Error processing screenshot for ${feedbackId}:`, error);
+      }
     }
-
-    const metadata = screenshotDoc.data();
-    const totalChunks = metadata.totalChunks;
-
-    // Get all chunks
-    const chunksSnapshot = await admin
-      .firestore()
-      .collection(SCREENSHOTS_COLLECTION)
-      .doc(screenshotId)
-      .collection("chunks")
-      .orderBy("index")
-      .get();
-
-    if (chunksSnapshot.empty || chunksSnapshot.docs.length !== totalChunks) {
-      console.log(`Missing chunks for screenshot ${screenshotId}`);
-      return null;
-    }
-
-    // Reconstruct base64 image from chunks
-    let base64Data = "";
-    chunksSnapshot.docs.forEach((chunk) => {
-      base64Data += chunk.data().data;
-    });
-
-    return `data:${metadata.mimeType || "image/png"};base64,${base64Data}`;
-  } catch (error) {
-    console.error(`Error reconstructing screenshot ${screenshotId}:`, error);
-    return null;
-  }
-}
-
-async function uploadScreenshotToGist(base64Image, feedbackId) {
-  try {
-    // Strip data URL prefix if present
-    const base64Content = base64Image.includes(";base64,")
-      ? base64Image.split(";base64,")[1]
-      : base64Image;
-
-    const gistResponse = await octokit.gists.create({
-      files: {
-        [`feedback_screenshot_${feedbackId}.txt`]: {
-          content: base64Content,
-        },
-      },
-      description: `Screenshot for feedback ${feedbackId}`,
-      public: false,
-    });
 
     return {
-      url: gistResponse.data.html_url,
-      raw_url:
-        gistResponse.data.files[`feedback_screenshot_${feedbackId}.txt`]
-          .raw_url,
+      id: feedbackId,
+      ...data,
+      timestamp: data.timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
     };
-  } catch (error) {
-    console.error(`Error uploading screenshot to Gist:`, error);
-    return null;
-  }
+  }));
+
+  // Write to JSON file
+  const exportPath = path.join(LOGS_DIR, 'feedback_export.json');
+  fs.writeFileSync(
+    exportPath,
+    JSON.stringify({
+      exported_at: new Date().toISOString(),
+      total_items: feedbackItems.length,
+      feedback: feedbackItems
+    }, null, 2)
+  );
+  console.log(`Exported ${feedbackItems.length} items to ${exportPath}`);
+
+  // Create HTML report
+  createHtmlIndex(feedbackItems);
+  console.log(`Created HTML report at ${path.join(LOGS_DIR, 'index.html')}`);
+
+  // Write a summary file
+  const summaryPath = path.join(LOGS_DIR, 'export_summary.txt');
+  const summary = `
+Feedback Export Summary
+----------------------
+Exported at: ${new Date().toISOString()}
+Total items: ${feedbackItems.length}
+With screenshots: ${feedbackItems.filter(item => item.screenshotId).length}
+Export location: ${exportPath}
+HTML report: ${path.join(LOGS_DIR, 'index.html')}
+  `.trim();
+
+  fs.writeFileSync(summaryPath, summary);
+  console.log(`Written summary to ${summaryPath}`);
 }
 
-// Update your saveScreenshotLocally function with better error handling
-async function saveScreenshotLocally(base64Image, feedbackId) {
-  try {
-    if (!base64Image) return null;
-
-    // Make sure we have just the base64 data without the prefix
-    const base64Data = base64Image.includes(";base64,")
-      ? base64Image.split(";base64,")[1]
-      : base64Image;
-
-    const mimeType = base64Image.includes(";base64,")
-      ? base64Image.split(";base64,")[0].replace("data:", "")
-      : "image/png";
-
-    const extension = mimeType.includes("png") ? "png" : "jpg";
-
-    // Ensure the screenshots directory exists
-    if (!fs.existsSync(SCREENSHOTS_DIR)) {
-      console.log(`Screenshots directory doesn't exist, creating it...`);
-      fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
-    }
-
-    const filePath = path.join(
-      SCREENSHOTS_DIR,
-      `feedback_${feedbackId}.${extension}`
-    );
-
-    // Write the file
-    try {
-      fs.writeFileSync(filePath, Buffer.from(base64Data, "base64"));
-      console.log(`Saved screenshot locally at: ${filePath}`);
-      return filePath;
-    } catch (writeError) {
-      console.error(`Error writing screenshot file: ${writeError.message}`);
-      console.error(`Path: ${filePath}`);
-      console.error(`Directory exists: ${fs.existsSync(SCREENSHOTS_DIR)}`);
-      console.error(
-        `Directory is writable: ${fs.accessSync(
-          SCREENSHOTS_DIR,
-          fs.constants.W_OK
-        )}`
-      );
-      return null;
-    }
-  } catch (error) {
-    console.error(`Error saving screenshot locally:`, error);
-    return null;
-  }
-}
-
-// Similarly update updateFeedbackLog with better error handling
-function updateFeedbackLog(feedbackData) {
-  try {
-    const logPath = path.join(LOGS_DIR, FEEDBACK_LOG_FILE);
-    console.log("Attempting to write log to:", logPath); // Debug log
-
-    // Read existing log or create new one
-    let logEntries = [];
-    try {
-      if (fs.existsSync(logPath)) {
-        console.log("Existing log file found"); // Debug log
-        const logContent = fs.readFileSync(logPath, "utf8");
-        logEntries = JSON.parse(logContent);
-      } else {
-        console.log("No existing log file, creating new one"); // Debug log
-      }
-    } catch (readError) {
-      console.error(`Error reading log file: ${readError.message}`);
-    }
-
-    // Add new entry
-    logEntries.push(feedbackData);
-    console.log("Added new entry to log, total entries:", logEntries.length); // Debug log
-
-    // Write updated log
-    try {
-      fs.writeFileSync(logPath, JSON.stringify(logEntries, null, 2), "utf8");
-      console.log(`Successfully wrote log file to: ${logPath}`); // Debug log
-    } catch (writeError) {
-      console.error(`Error writing log file: ${writeError.message}`);
-      console.error(`Path: ${logPath}`);
-      console.error(`Directory exists: ${fs.existsSync(LOGS_DIR)}`);
-      console.error(
-        `Directory is writable: ${fs.accessSync(LOGS_DIR, fs.constants.W_OK)}`
-      );
-    }
-  } catch (error) {
-    console.error(`Error updating feedback log:`, error);
-  }
-}
-
-// Create a simple HTML index for easier manual review
-function createHtmlIndex(logEntries) {
-  const htmlPath = path.join(LOGS_DIR, "index.html");
-
+// Simplified HTML index creation
+function createHtmlIndex(feedbackItems) {
+  const htmlPath = path.join(LOGS_DIR, 'index.html');
+  
   let html = `
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Feedback Log</title>
+  <title>Feedback Export</title>
   <style>
     body { font-family: Arial, sans-serif; margin: 20px; }
-    .feedback-item { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
-    .feedback-item h2 { margin-top: 0; }
-    .metadata { color: #666; font-size: 0.9em; }
-    .content { margin: 15px 0; }
+    .feedback-item { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; }
+    .metadata { color: #666; }
     .screenshot { max-width: 300px; margin-top: 10px; }
-    .github-link { background: #0366d6; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; }
-    .github-link:hover { background: #024ea7; }
-    .timestamp { font-style: italic; }
   </style>
 </head>
 <body>
-  <h1>Feedback Log</h1>
-  <p>Last updated: ${new Date().toLocaleString()}</p>
-  <p>Total entries: ${logEntries.length}</p>
+  <h1>Feedback Export</h1>
+  <p>Exported at: ${new Date().toLocaleString()}</p>
+  <p>Total items: ${feedbackItems.length}</p>
   
   <div class="feedback-items">
   `;
 
-  // Sort by date (newest first)
-  logEntries.sort((a, b) => {
-    return new Date(b.processedAt || 0) - new Date(a.processedAt || 0);
-  });
-
-  // Add each feedback entry
-  logEntries.forEach((entry) => {
-    const date = entry.processedAt
-      ? new Date(entry.processedAt).toLocaleString()
-      : "Unknown date";
-
+  feedbackItems.forEach((item) => {
     html += `
     <div class="feedback-item">
-      <h2>${entry.title || "Untitled feedback"}</h2>
+      <h3>Feedback ID: ${item.id}</h3>
       <div class="metadata">
-        <p><strong>ID:</strong> ${entry.id}</p>
-        <p><strong>Platform:</strong> ${entry.platform || "Unknown"}</p>
-        <p><strong>App version:</strong> ${entry.app_version || "Unknown"} ${
-      entry.build_number ? `(Build ${entry.build_number})` : ""
-    }</p>
-        <p><strong>User:</strong> ${entry.user_email || "Anonymous"}</p>
-        <p class="timestamp">Processed: ${date}</p>
+        <p>Platform: ${item.platform || 'Unknown'}</p>
+        <p>Version: ${item.app_version || 'Unknown'}</p>
+        <p>User: ${item.user_email || 'Anonymous'}</p>
+        <p>Time: ${new Date(item.timestamp).toLocaleString()}</p>
       </div>
-      
       <div class="content">
-        <p>${entry.text || "No content provided"}</p>
+        <p>${item.text || 'No content provided'}</p>
       </div>
-      
-      ${
-        entry.localScreenshotPath
-          ? `<img src="${entry.localScreenshotPath.replace(
-              LOGS_DIR + "/",
-              ""
-            )}" class="screenshot" />`
-          : ""
-      }
-      ${
-        entry.screenshotUrl
-          ? `<p><a href="${entry.screenshotUrl}" target="_blank">View full screenshot</a></p>`
-          : ""
-      }
-      
-      ${
-        entry.githubIssueUrl
-          ? `<p><a href="${entry.githubIssueUrl}" target="_blank" class="github-link">View GitHub Issue #${entry.githubIssueNumber}</a></p>`
-          : ""
-      }
+      ${item.localScreenshotPath ? 
+        `<img src="${item.localScreenshotPath.replace(LOGS_DIR + '/', '')}" class="screenshot" />` 
+        : ''}
     </div>
     `;
   });
@@ -327,189 +124,5 @@ function createHtmlIndex(logEntries) {
 </html>
   `;
 
-  fs.writeFileSync(htmlPath, html, "utf8");
-  console.log(`Created HTML index at: ${htmlPath}`);
+  fs.writeFileSync(htmlPath, html);
 }
-
-async function main() {
-  console.log(
-    `Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`
-  );
-
-  // Add this debug info
-  console.log("Current working directory:", process.cwd());
-  console.log("Logs directory absolute path:", path.resolve(LOGS_DIR));
-
-  // Simplify the query to avoid the composite index requirement
-  // Instead of using complex where clauses with ordering, just query for items without GitHub URLs
-  // This will get ALL feedback that hasn't been processed
-  const newFeedbackQuery = admin
-    .firestore()
-    .collection("feedback")
-    .orderBy("timestamp", "desc")
-    .limit(10);
-
-  const snapshot = await newFeedbackQuery.get();
-  console.log(`Found ${snapshot.size} total feedback items`);
-
-  // Filter for unprocessed feedback in memory
-  const unprocessedDocs = snapshot.docs.filter((doc) => {
-    const data = doc.data();
-    return !data.githubIssueUrl && !data.githubIssueError;
-  });
-
-  console.log(`Found ${unprocessedDocs.length} unprocessed feedback items`);
-
-  // Change this part - validDocs should be unprocessedDocs
-  unprocessedDocs.sort((a, b) => {
-    // Changed from validDocs to unprocessedDocs
-    const timestampA = a.data().timestamp?.toDate?.() || new Date(0);
-    const timestampB = b.data().timestamp?.toDate?.() || new Date(0);
-    return timestampB - timestampA;
-  });
-
-  // Write initial data to logs
-  const initialLogPath = path.join(LOGS_DIR, "initial_feedback.json");
-  fs.writeFileSync(
-    initialLogPath,
-    JSON.stringify(
-      {
-        timestamp: new Date().toISOString(),
-        total_found: snapshot.size,
-        unprocessed: unprocessedDocs.length,
-        feedback_items: unprocessedDocs.map((doc) => ({
-          id: doc.id,
-          ...doc.data(),
-        })),
-      },
-      null,
-      2
-    )
-  );
-  console.log(`Written initial feedback data to ${initialLogPath}`);
-
-  for (const doc of unprocessedDocs) {
-    const feedbackData = doc.data();
-    const feedbackId = doc.id;
-
-    console.log("Feedback Data:", {
-      id: feedbackId,
-      text: feedbackData.text,
-      platform: feedbackData.platform,
-      screenshot: feedbackData.screenshotId ? "Present" : "None",
-    });
-
-    try {
-      // Add verification for GitHub token
-      if (!process.env.GITHUB_TOKEN) {
-        throw new Error("GITHUB_TOKEN is not set");
-      }
-
-      // Test GitHub API access
-      try {
-        await octokit.rest.users.getAuthenticated();
-        console.log("GitHub authentication successful");
-      } catch (githubError) {
-        console.error("GitHub authentication failed:", githubError.message);
-        throw githubError;
-      }
-
-      console.log(`Processing feedback ${feedbackId}`);
-
-      // 1. Handle screenshot if exists
-      let screenshotUrl = null;
-      if (feedbackData.screenshotId) {
-        const base64Image = await reconstructScreenshot(
-          feedbackData.screenshotId
-        );
-        if (base64Image) {
-          const gistData = await uploadScreenshotToGist(
-            base64Image,
-            feedbackId
-          );
-          screenshotUrl = gistData?.raw_url;
-          await saveScreenshotLocally(base64Image, feedbackId);
-        }
-      }
-
-      // 2. Create GitHub issue
-      const issueBody = `
-**Feedback ID:** ${feedbackId}
-**Platform:** ${feedbackData.platform || "Unknown"}
-**App Version:** ${feedbackData.app_version || "Unknown"}
-**User:** ${feedbackData.user_email || "Anonymous"}
-
-${feedbackData.text || "No description provided"}
-
-${screenshotUrl ? `\n\n![Screenshot](${screenshotUrl})` : ""}
-        `;
-
-      const issue = await octokit.issues.create({
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
-        title: feedbackData.title || `New Feedback - ${feedbackId}`,
-        body: issueBody,
-        labels: [DEFAULT_STATUS],
-      });
-
-      // 3. Update Firestore
-      await doc.ref.update({
-        githubIssueUrl: issue.data.html_url,
-        githubIssueNumber: issue.data.number,
-        processedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // 4. Log processing
-      updateFeedbackLog({
-        ...feedbackData,
-        id: feedbackId,
-        githubIssueUrl: issue.data.html_url,
-        githubIssueNumber: issue.data.number,
-        processedAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error(`Error processing feedback ${feedbackId}:`, error);
-      await doc.ref.update({
-        githubIssueError: error.message,
-        retryCount: admin.firestore.FieldValue.increment(1),
-      });
-    }
-  }
-
-  // Simplify the failed feedback query too
-  const failedFeedbackQuery = admin
-    .firestore()
-    .collection(FEEDBACK_COLLECTION)
-    .where("githubIssueUrl", "==", null)
-    .where("githubIssueError", "!=", null)
-    .limit(5);
-
-  const failedFeedback = await failedFeedbackQuery.get();
-
-  // Filter retry counts in memory
-  const docsToRetry = failedFeedback.docs.filter((doc) => {
-    const retryCount = doc.data().retryCount || 0;
-    return retryCount < 3;
-  });
-
-  console.log(`Found ${docsToRetry.length} failed feedback items to retry`);
-
-  for (const doc of docsToRetry) {
-    // Reset error fields to try again
-    await doc.ref.update({
-      githubIssueError: null,
-      lastRetry: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    console.log(`Reset error for feedback ${doc.id} to retry`);
-  }
-}
-
-main()
-  .then(() => {
-    console.log("Sync completed successfully");
-    process.exit(0);
-  })
-  .catch((error) => {
-    console.error("Sync failed:", error);
-    process.exit(1);
-  });
