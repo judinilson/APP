@@ -1,11 +1,11 @@
 const { Octokit } = require('@octokit/rest');
+const { graphql } = require('@octokit/graphql');
 const admin = require('firebase-admin');
+const fs = require('fs');
 
 // Initialize Firebase Admin
 let serviceAccount;
 try {
-  const fs = require('fs');
-  
   // Get the service account from file
   const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
   
@@ -44,6 +44,13 @@ const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN
 });
 
+// For GraphQL operations
+const graphqlWithAuth = graphql.defaults({
+  headers: {
+    authorization: `token ${process.env.GITHUB_TOKEN}`
+  }
+});
+
 // Repository and project configuration
 const GITHUB_OWNER = process.env.GITHUB_OWNER || 'dnre';
 const GITHUB_REPO = process.env.GITHUB_REPO || 'APP';
@@ -52,54 +59,81 @@ const FEEDBACK_COLLECTION = 'feedback';
 const SCREENSHOTS_COLLECTION = 'feedback_screenshots';
 const DEFAULT_STATUS = 'status:reportado';
 
-// Function to get project ID from project name
+// Function to get project ID from project name using GraphQL
 async function getProjectId() {
   try {
-    // List all projects in the repo
-    const { data: projects } = await octokit.projects.listForRepo({
-      owner: GITHUB_OWNER,
-      repo: GITHUB_REPO,
-    });
+    // Use GraphQL API to query for projects v2
+    const data = await graphqlWithAuth(`
+      query {
+        organization(login: "${GITHUB_OWNER}") {
+          projectsV2(first: 20) {
+            nodes {
+              id
+              title
+              number
+              url
+            }
+          }
+        }
+      }
+    `);
     
     // Find the project with the matching name
-    const project = projects.find(p => p.name === PROJECT_NAME);
+    const projects = data.organization.projectsV2.nodes;
+    const project = projects.find(p => p.title === PROJECT_NAME);
     
     if (!project) {
-      console.error(`Project "${PROJECT_NAME}" not found in ${GITHUB_OWNER}/${GITHUB_REPO}`);
+      console.error(`Project "${PROJECT_NAME}" not found in ${GITHUB_OWNER} organization`);
       return null;
     }
     
-    return project.id;
+    console.log(`Found project: ${project.title} (#${project.number})`);
+    return {
+      id: project.id,
+      number: project.number
+    };
   } catch (error) {
     console.error('Error getting project ID:', error);
     return null;
   }
 }
 
-// Function to add an issue to a project
-async function addIssueToProject(issueId, projectId) {
+// Function to add an issue to a project using GraphQL
+async function addIssueToProject(issueId, projectInfo) {
   try {
-    const { data: column } = await octokit.projects.listColumns({
-      project_id: projectId
-    });
-    
-    // Find the first column (typically "To Do" or "Backlog")
-    // We can also look for a specific column by name if needed
-    if (column.length > 0) {
-      const firstColumn = column[0];
-      
-      await octokit.projects.createCard({
-        column_id: firstColumn.id,
-        content_id: issueId,
-        content_type: 'Issue'
-      });
-      
-      console.log(`Added issue to project column "${firstColumn.name}"`);
-      return true;
-    } else {
-      console.error('No columns found in project');
+    if (!projectInfo || !projectInfo.id) {
+      console.error('Invalid project information');
       return false;
     }
+    
+    // Convert issueId to node ID if necessary
+    let issueNodeId = issueId;
+    if (!issueNodeId.startsWith('I_')) {
+      // Fetch the node ID if we only have the issue number
+      const { data: issue } = await octokit.rest.issues.get({
+        owner: GITHUB_OWNER,
+        repo: GITHUB_REPO,
+        issue_number: issueId
+      });
+      issueNodeId = issue.node_id;
+    }
+    
+    // Add the issue to the project
+    const result = await graphqlWithAuth(`
+      mutation {
+        addProjectV2ItemById(input: {
+          projectId: "${projectInfo.id}"
+          contentId: "${issueNodeId}"
+        }) {
+          item {
+            id
+          }
+        }
+      }
+    `);
+    
+    console.log(`Added issue to project "${PROJECT_NAME}"`);
+    return true;
   } catch (error) {
     console.error('Error adding issue to project:', error);
     return false;
@@ -179,13 +213,13 @@ async function main() {
   console.log(`Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`);
   
   // Get project ID first
-  const projectId = await getProjectId();
-  if (!projectId) {
+  const projectInfo = await getProjectId();
+  if (!projectInfo) {
     console.error(`Cannot proceed: Project ${PROJECT_NAME} not found or cannot be accessed`);
     process.exit(1);
   }
   
-  console.log(`Found project "${PROJECT_NAME}" with ID: ${projectId}`);
+  console.log(`Found project "${PROJECT_NAME}" with ID: ${projectInfo.id}`);
 
   // Query for feedback reports that don't have GitHub issues yet
   const newFeedbackQuery = admin.firestore()
@@ -283,7 +317,7 @@ ${screenshotMarkdown}
       });
       
       // Add issue to project
-      const addedToProject = await addIssueToProject(response.data.id, projectId);
+      const addedToProject = await addIssueToProject(response.data.node_id, projectInfo);
 
       // Update Firestore document with GitHub issue URL
       await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
