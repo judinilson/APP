@@ -1,4 +1,3 @@
-// scripts/sync-firestore-to-github.js
 const { Octokit } = require('@octokit/rest');
 const admin = require('firebase-admin');
 
@@ -16,83 +15,233 @@ const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN
 });
 
-const GITHUB_OWNER = process.env.GITHUB_REPOSITORY.split('/')[0];
-const GITHUB_REPO = process.env.GITHUB_REPOSITORY.split('/')[1];
-const COLLECTION_NAME = 'bugReports';
+// Repository and project configuration
+const GITHUB_OWNER = process.env.GITHUB_OWNER || 'dnre';
+const GITHUB_REPO = process.env.GITHUB_REPO || 'APP';
+const PROJECT_NAME = process.env.PROJECT_NAME || 'Dnre-bug-tracking';
+const FEEDBACK_COLLECTION = 'feedback';
+const SCREENSHOTS_COLLECTION = 'feedback_screenshots';
+const DEFAULT_STATUS = 'status:reportado';
+
+// Function to get project ID from project name
+async function getProjectId() {
+  try {
+    // List all projects in the repo
+    const { data: projects } = await octokit.projects.listForRepo({
+      owner: GITHUB_OWNER,
+      repo: GITHUB_REPO,
+    });
+    
+    // Find the project with the matching name
+    const project = projects.find(p => p.name === PROJECT_NAME);
+    
+    if (!project) {
+      console.error(`Project "${PROJECT_NAME}" not found in ${GITHUB_OWNER}/${GITHUB_REPO}`);
+      return null;
+    }
+    
+    return project.id;
+  } catch (error) {
+    console.error('Error getting project ID:', error);
+    return null;
+  }
+}
+
+// Function to add an issue to a project
+async function addIssueToProject(issueId, projectId) {
+  try {
+    const { data: column } = await octokit.projects.listColumns({
+      project_id: projectId
+    });
+    
+    // Find the first column (typically "To Do" or "Backlog")
+    // We can also look for a specific column by name if needed
+    if (column.length > 0) {
+      const firstColumn = column[0];
+      
+      await octokit.projects.createCard({
+        column_id: firstColumn.id,
+        content_id: issueId,
+        content_type: 'Issue'
+      });
+      
+      console.log(`Added issue to project column "${firstColumn.name}"`);
+      return true;
+    } else {
+      console.error('No columns found in project');
+      return false;
+    }
+  } catch (error) {
+    console.error('Error adding issue to project:', error);
+    return false;
+  }
+}
+
+async function reconstructScreenshot(screenshotId) {
+  try {
+    // Get screenshot metadata
+    const screenshotDoc = await admin.firestore()
+      .collection(SCREENSHOTS_COLLECTION)
+      .doc(screenshotId)
+      .get();
+    
+    if (!screenshotDoc.exists) {
+      console.log(`Screenshot ${screenshotId} not found`);
+      return null;
+    }
+    
+    const metadata = screenshotDoc.data();
+    const totalChunks = metadata.totalChunks;
+    
+    // Get all chunks
+    const chunksSnapshot = await admin.firestore()
+      .collection(SCREENSHOTS_COLLECTION)
+      .doc(screenshotId)
+      .collection('chunks')
+      .orderBy('index')
+      .get();
+    
+    if (chunksSnapshot.empty || chunksSnapshot.docs.length !== totalChunks) {
+      console.log(`Missing chunks for screenshot ${screenshotId}`);
+      return null;
+    }
+    
+    // Reconstruct base64 image from chunks
+    let base64Data = '';
+    chunksSnapshot.docs.forEach(chunk => {
+      base64Data += chunk.data().data;
+    });
+    
+    return `data:${metadata.mimeType || 'image/png'};base64,${base64Data}`;
+  } catch (error) {
+    console.error(`Error reconstructing screenshot ${screenshotId}:`, error);
+    return null;
+  }
+}
+
+async function uploadScreenshotToGist(base64Image, feedbackId) {
+  try {
+    // Strip data URL prefix if present
+    const base64Content = base64Image.includes(';base64,') 
+      ? base64Image.split(';base64,')[1] 
+      : base64Image;
+    
+    const gistResponse = await octokit.gists.create({
+      files: {
+        [`feedback_screenshot_${feedbackId}.txt`]: {
+          content: base64Content
+        }
+      },
+      description: `Screenshot for feedback ${feedbackId}`,
+      public: false
+    });
+    
+    return {
+      url: gistResponse.data.html_url,
+      raw_url: gistResponse.data.files[`feedback_screenshot_${feedbackId}.txt`].raw_url
+    };
+  } catch (error) {
+    console.error(`Error uploading screenshot to Gist:`, error);
+    return null;
+  }
+}
 
 async function main() {
-  console.log('Starting Firestore to GitHub Issues sync');
+  console.log(`Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`);
+  
+  // Get project ID first
+  const projectId = await getProjectId();
+  if (!projectId) {
+    console.error(`Cannot proceed: Project ${PROJECT_NAME} not found or cannot be accessed`);
+    process.exit(1);
+  }
+  
+  console.log(`Found project "${PROJECT_NAME}" with ID: ${projectId}`);
 
-  // Query for bug reports that don't have GitHub issues yet
-  const newReportsQuery = admin.firestore()
-    .collection(COLLECTION_NAME)
+  // Query for feedback reports that don't have GitHub issues yet
+  const newFeedbackQuery = admin.firestore()
+    .collection(FEEDBACK_COLLECTION)
     .where('githubIssueUrl', '==', null)
     .where('githubIssueError', '==', null)
-    .limit(20);
+    .orderBy('timestamp', 'desc')
+    .limit(10);
 
-  const snapshot = await newReportsQuery.get();
-  console.log(`Found ${snapshot.size} new bug reports to process`);
+  const snapshot = await newFeedbackQuery.get();
+  console.log(`Found ${snapshot.size} new feedback items to process`);
 
   for (const doc of snapshot.docs) {
-    const reportData = doc.data();
-    const reportId = doc.id;
+    const feedbackData = doc.data();
+    const feedbackId = doc.id;
     
     try {
-      console.log(`Processing bug report ${reportId}`);
+      console.log(`Processing feedback ${feedbackId}`);
       
-      // Extract data from the bug report
+      // Extract data from the feedback
       const {
-        userAgent,
-        deviceInfo,
-        appVersion,
-        description,
-        userEmail,
+        text,
+        app_version,
+        build_number,
+        platform,
+        device_info,
+        screenshot_ref,
         timestamp,
-        stackTrace,
-        screenshotUrl,
-        steps,
-        severity,
-      } = reportData;
+        user_email
+      } = feedbackData;
+
+      // Prepare screenshot
+      let screenshotMarkdown = '';
+      if (screenshot_ref) {
+        console.log(`Retrieving screenshot ${screenshot_ref} for feedback ${feedbackId}`);
+        const base64Image = await reconstructScreenshot(screenshot_ref);
+        
+        if (base64Image) {
+          // Upload image to GitHub Gist since it's too large for issue body
+          const gistInfo = await uploadScreenshotToGist(base64Image, feedbackId);
+          
+          if (gistInfo) {
+            screenshotMarkdown = `### Screenshot
+![Screenshot](${gistInfo.raw_url})
+
+*[View full screenshot](${gistInfo.url})*`;
+          } else {
+            screenshotMarkdown = '*Screenshot was available but could not be uploaded*';
+          }
+        }
+      }
 
       // Format the issue body
       const issueBody = `
-## Bug Report Details
+## User Feedback
 
-**Report ID:** ${reportId}
-**Date Reported:** ${new Date(timestamp?.toDate() || new Date()).toLocaleString()}
-**Reporter Email:** ${userEmail || 'Not provided'}
-**App Version:** ${appVersion || 'Not provided'}
-**Severity:** ${severity || 'Not specified'}
+**Feedback ID:** ${feedbackId}
+**Date Submitted:** ${timestamp?.toDate ? new Date(timestamp.toDate()).toLocaleString() : 'Unknown'}
+**User Email:** ${user_email || 'Not provided'}
+**App Version:** ${app_version || 'Unknown'}${build_number ? ` (${build_number})` : ''}
+**Platform:** ${platform || 'Unknown'}
 
 ### Device Information
-- **Device:** ${deviceInfo?.model || 'Not provided'}
-- **OS:** ${deviceInfo?.os || 'Not provided'}
-- **User Agent:** ${userAgent || 'Not provided'}
+${Object.entries(device_info || {}).map(([key, value]) => `- **${key}:** ${value}`).join('\n')}
 
-### Description
-${description || 'No description provided'}
+### Feedback Content
+${text || 'No text content provided'}
 
-${steps ? `### Steps to Reproduce\n${steps}` : ''}
-
-${stackTrace ? `### Stack Trace\n\`\`\`\n${stackTrace}\n\`\`\`` : ''}
-
-${screenshotUrl ? `### Screenshot\n![Screenshot](${screenshotUrl})` : ''}
+${screenshotMarkdown}
 
 ---
-*This issue was automatically created from a user bug report in the app.*
+*This issue was automatically created from user feedback submitted through the app.*
 `;
 
       // Determine appropriate issue title
-      const issueTitle = description 
-        ? `[BUG] ${description.substring(0, 80)}${description.length > 80 ? '...' : ''}`
-        : `[BUG] User reported issue (${reportId})`;
+      const issueTitle = text 
+        ? `[Feedback] ${text.substring(0, 80)}${text.length > 80 ? '...' : ''}`
+        : `[Feedback] User feedback (${feedbackId})`;
 
-      // Create labels array based on data
-      const labels = ['automated', 'bug'];
+      // Create labels array based on data - include default status
+      const labels = ['feedback', 'from-app', DEFAULT_STATUS];
       
-      // Add severity label if available
-      if (severity) {
-        labels.push(`severity:${severity}`);
+      // Add platform label if available
+      if (platform) {
+        labels.push(platform.toLowerCase().includes('ios') ? 'ios' : 'android');
       }
 
       // Create GitHub issue
@@ -103,45 +252,52 @@ ${screenshotUrl ? `### Screenshot\n![Screenshot](${screenshotUrl})` : ''}
         body: issueBody,
         labels: labels,
       });
+      
+      // Add issue to project
+      const addedToProject = await addIssueToProject(response.data.id, projectId);
 
       // Update Firestore document with GitHub issue URL
-      await admin.firestore().collection(COLLECTION_NAME).doc(reportId).update({
+      await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
         githubIssueUrl: response.data.html_url,
         githubIssueNumber: response.data.number,
+        githubRepo: `${GITHUB_OWNER}/${GITHUB_REPO}`,
+        githubProject: PROJECT_NAME,
+        addedToProject: addedToProject,
+        status: 'Reportado',
         processedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      console.log(`Created GitHub issue #${response.data.number} for bug report ${reportId}`);
+      console.log(`Created GitHub issue #${response.data.number} for feedback ${feedbackId} and added to project "${PROJECT_NAME}"`);
     } catch (error) {
-      console.error(`Error creating GitHub issue for ${reportId}:`, error);
+      console.error(`Error creating GitHub issue for ${feedbackId}:`, error);
       
       // Update document with error info
-      await admin.firestore().collection(COLLECTION_NAME).doc(reportId).update({
+      await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
         githubIssueError: error.message,
         lastAttempt: admin.firestore.FieldValue.serverTimestamp(),
+        retryCount: admin.firestore.FieldValue.increment(1) 
       });
     }
   }
 
   // Also check for failed reports to retry
-  const failedReportsQuery = admin.firestore()
-    .collection(COLLECTION_NAME)
+  const failedFeedbackQuery = admin.firestore()
+    .collection(FEEDBACK_COLLECTION)
     .where('githubIssueError', '!=', null)
     .where('githubIssueUrl', '==', null)
-    .where('retryCount', '<', 5) // Limit retries
-    .limit(10);
+    .where('retryCount', '<', 3) // Limit retries
+    .limit(5);
   
-  const failedReports = await failedReportsQuery.get();
-  console.log(`Found ${failedReports.size} failed bug reports to retry`);
+  const failedFeedback = await failedFeedbackQuery.get();
+  console.log(`Found ${failedFeedback.size} failed feedback items to retry`);
   
-  for (const doc of failedReports.docs) {
+  for (const doc of failedFeedback.docs) {
     // Reset error fields to try again
     await doc.ref.update({
       githubIssueError: null,
-      retryCount: admin.firestore.FieldValue.increment(1),
       lastRetry: admin.firestore.FieldValue.serverTimestamp(),
     });
-    console.log(`Reset error for bug report ${doc.id} to retry`);
+    console.log(`Reset error for feedback ${doc.id} to retry`);
   }
 }
 
