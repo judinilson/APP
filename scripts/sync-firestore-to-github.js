@@ -58,7 +58,7 @@ const PROJECT_NAME = process.env.PROJECT_NAME || 'Dnre-bug-tracking';
 const FEEDBACK_COLLECTION = 'feedback';
 const SCREENSHOTS_COLLECTION = 'feedback_screenshots';
 const DEFAULT_STATUS = 'status:reportado';
-const PROJECT_NUMBER = env.PROJECT_NUMBER || 7
+const PROJECT_NUMBER = process.env.PROJECT_NUMBER || 7
 
 // Function to get project ID from project name - checks both org and repo projects
 async function getProjectId() {
