@@ -41,7 +41,7 @@ jobs:
           
       - name: Upload Feedback Logs
         if: always()  # Run even if previous steps failed
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v2  # Changed from v3 to v2
         with:
           name: feedback-logs
           path: feedback_logs/
