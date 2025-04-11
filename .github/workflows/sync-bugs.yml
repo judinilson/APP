@@ -33,18 +33,35 @@ jobs:
         run: |
           echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" | base64 -d > /tmp/credentials/service-account.json
           ls -la /tmp/credentials/service-account.json
+
+      - name: Check GitHub Token
+        run: |
+          echo "Testing GitHub token..."
+          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+               -H "Accept: application/vnd.github.v3+json" \
+               https://api.github.com/user
       
       - name: Sync Feedback to Issues
-        run: node scripts/sync-firestore-to-github.js
+        run: |
+          # Create test file to verify write permissions
+          echo "Test content" > feedback_logs/test.txt
+          node scripts/sync-firestore-to-github.js
+          ls -la feedback_logs/
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
           GITHUB_OWNER: 'judinilson'
           GITHUB_REPO: 'APP'
           
+      - name: Debug Artifacts
+        if: always()
+        run: |
+          echo "Contents of feedback_logs directory:"
+          ls -R feedback_logs/
+        
       - name: List Feedback Logs
-        if: always()  # Run even if previous steps failed
-        uses: actions/upload-artifact@v4 # Changed from v3 to v2
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: feedback-logs
           path: feedback_logs/
