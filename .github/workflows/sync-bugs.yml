@@ -5,6 +5,12 @@ on:
     - cron: '0 */1 * * *'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  issues: write
+  repository-projects: write
+  organization-projects: write  # If using org projects
+
 jobs:
   sync-feedback:
     runs-on: ubuntu-latest
@@ -18,9 +24,9 @@ jobs:
           node-version: '16'
           
       - name: Install specific dependencies
-        run: npm install @octokit/rest firebase-admin
+        run: npm install @octokit/rest @octokit/graphql firebase-admin
 
-      - name: Sync Feedback to Issues
+      - name: Prepare Firebase credentials
         run: |
           # Create a temporary directory for credentials
           mkdir -p /tmp/credentials
@@ -31,8 +37,8 @@ jobs:
           # Check that the file exists and has content (no sensitive data)
           ls -la /tmp/credentials/service-account.json
           
-          # Run the script with the path to the credentials file
-          node scripts/sync-firestore-to-github.js
+      - name: Sync Feedback to Issues
+        run: node scripts/sync-firestore-to-github.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
