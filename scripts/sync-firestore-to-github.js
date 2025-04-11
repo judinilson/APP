@@ -1,23 +1,83 @@
+const admin = require('firebase-admin');
+const fs = require('fs');
+const path = require('path');
+
+// Define your logs directory
+const LOGS_DIR = path.join(process.cwd(), 'logs');
+
+// Ensure logs directory exists
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
+}
+
+// Create a screenshots directory inside logs
+const SCREENSHOTS_DIR = path.join(LOGS_DIR, 'screenshots');
+if (!fs.existsSync(SCREENSHOTS_DIR)) {
+  fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+}
+
+/**
+ * Retrieves screenshot data from Firebase Storage
+ * @param {string} screenshotId - The ID of the screenshot
+ * @returns {Promise<Buffer|null>} - The screenshot data or null if not found
+ */
+async function reconstructScreenshot(screenshotId) {
+  try {
+    console.log(`Retrieving screenshot: ${screenshotId}`);
+    const bucket = admin.storage().bucket();
+    const [file] = await bucket.file(`screenshots/${screenshotId}.png`).download();
+    return file;
+  } catch (error) {
+    console.error(`Failed to retrieve screenshot ${screenshotId}:`, error);
+    return null;
+  }
+}
+
+/**
+ * Saves screenshot data to local file system
+ * @param {Buffer} screenshotData - The screenshot data
+ * @param {string} feedbackId - The feedback ID to use in filename
+ * @returns {Promise<string|null>} - The local path to the saved file or null on error
+ */
+async function saveScreenshotLocally(screenshotData, feedbackId) {
+  if (!screenshotData) return null;
+  
+  try {
+    const filename = `screenshot_${feedbackId}.png`;
+    const localPath = path.join(SCREENSHOTS_DIR, filename);
+    
+    // Write the file
+    fs.writeFileSync(localPath, screenshotData);
+    console.log(`Saved screenshot to ${localPath}`);
+    
+    // Return the path relative to the HTML file location for proper linking
+    return path.join('screenshots', filename);
+  } catch (error) {
+    console.error(`Error saving screenshot for ${feedbackId}:`, error);
+    return null;
+  }
+}
+
 async function main() {
   console.log('Starting Firestore Feedback data export');
   console.log('Current working directory:', process.cwd());
   console.log('Logs directory absolute path:', path.resolve(LOGS_DIR));
-
+  
   // Get all feedback items
   const feedbackQuery = admin
     .firestore()
     .collection('feedback')
     .orderBy('timestamp', 'desc')
     .limit(50); // Increased limit since we're just exporting
-
+  
   const snapshot = await feedbackQuery.get();
   console.log(`Found ${snapshot.size} total feedback items`);
-
+  
   // Prepare data for export
   const feedbackItems = await Promise.all(snapshot.docs.map(async (doc) => {
     const data = doc.data();
     const feedbackId = doc.id;
-
+    
     // Handle screenshot if exists
     let screenshotData = null;
     if (data.screenshotId) {
@@ -34,14 +94,14 @@ async function main() {
         console.error(`Error processing screenshot for ${feedbackId}:`, error);
       }
     }
-
+    
     return {
       id: feedbackId,
       ...data,
       timestamp: data.timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
     };
   }));
-
+  
   // Write to JSON file
   const exportPath = path.join(LOGS_DIR, 'feedback_export.json');
   fs.writeFileSync(
@@ -53,11 +113,11 @@ async function main() {
     }, null, 2)
   );
   console.log(`Exported ${feedbackItems.length} items to ${exportPath}`);
-
+  
   // Create HTML report
   createHtmlIndex(feedbackItems);
   console.log(`Created HTML report at ${path.join(LOGS_DIR, 'index.html')}`);
-
+  
   // Write a summary file
   const summaryPath = path.join(LOGS_DIR, 'export_summary.txt');
   const summary = `
@@ -69,7 +129,6 @@ With screenshots: ${feedbackItems.filter(item => item.screenshotId).length}
 Export location: ${exportPath}
 HTML report: ${path.join(LOGS_DIR, 'index.html')}
   `.trim();
-
   fs.writeFileSync(summaryPath, summary);
   console.log(`Written summary to ${summaryPath}`);
 }
@@ -97,7 +156,6 @@ function createHtmlIndex(feedbackItems) {
   
   <div class="feedback-items">
   `;
-
   feedbackItems.forEach((item) => {
     html += `
     <div class="feedback-item">
@@ -112,17 +170,23 @@ function createHtmlIndex(feedbackItems) {
         <p>${item.text || 'No content provided'}</p>
       </div>
       ${item.localScreenshotPath ? 
-        `<img src="${item.localScreenshotPath.replace(LOGS_DIR + '/', '')}" class="screenshot" />` 
+        `<img src="${item.localScreenshotPath}" class="screenshot" />` 
         : ''}
     </div>
     `;
   });
-
   html += `
   </div>
 </body>
 </html>
   `;
-
   fs.writeFileSync(htmlPath, html);
 }
+
+
+// Execute the main function
+main().then(() => {
+  console.log('Export completed successfully');
+}).catch(error => {
+  console.error('Export failed:', error);
+});
