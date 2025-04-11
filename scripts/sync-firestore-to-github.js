@@ -1,141 +1,106 @@
-const admin = require('firebase-admin');
-const fs = require('fs');
-const path = require('path');
+const admin = require("firebase-admin");
+const fs = require("fs");
+const path = require("path");
 
-// Define your logs directory
-const LOGS_DIR = path.join(process.cwd(), 'logs');
+// Directory for logs and screenshots
+const LOGS_DIR = "feedback_logs";
+const SCREENSHOTS_DIR = path.join(LOGS_DIR, "screenshots");
 
-// Ensure logs directory exists
+// Ensure directories exist
 if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
-
-// Create a screenshots directory inside logs
-const SCREENSHOTS_DIR = path.join(LOGS_DIR, 'screenshots');
 if (!fs.existsSync(SCREENSHOTS_DIR)) {
   fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
 }
 
+// Initialize Firebase Admin
+try {
+  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  
+  if (!serviceAccountPath) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT_PATH environment variable is not set");
+  }
+  
+  const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
+  
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  
+  console.log(`Successfully initialized Firebase for project: ${serviceAccount.project_id}`);
+} catch (error) {
+  console.error("Error initializing Firebase:", error.message);
+  process.exit(1);
+}
+
 /**
- * Retrieves screenshot data from Firebase Storage
- * @param {string} screenshotId - The ID of the screenshot
- * @returns {Promise<Buffer|null>} - The screenshot data or null if not found
+ * Reconstructs a screenshot from Firestore chunks
  */
 async function reconstructScreenshot(screenshotId) {
   try {
-    console.log(`Retrieving screenshot: ${screenshotId}`);
-    const bucket = admin.storage().bucket();
-    const [file] = await bucket.file(`screenshots/${screenshotId}.png`).download();
-    return file;
+    // Get screenshot metadata
+    const screenshotDoc = await admin
+      .firestore()
+      .collection("feedback_screenshots")
+      .doc(screenshotId)
+      .get();
+
+    if (!screenshotDoc.exists) {
+      return null;
+    }
+
+    const metadata = screenshotDoc.data();
+    const totalChunks = metadata.totalChunks;
+
+    // Get all chunks
+    const chunksSnapshot = await admin
+      .firestore()
+      .collection("feedback_screenshots")
+      .doc(screenshotId)
+      .collection("chunks")
+      .orderBy("index")
+      .get();
+
+    if (chunksSnapshot.empty || chunksSnapshot.docs.length !== totalChunks) {
+      return null;
+    }
+
+    // Reconstruct base64 image from chunks
+    let base64Data = "";
+    chunksSnapshot.docs.forEach((chunk) => {
+      base64Data += chunk.data().data;
+    });
+
+    return base64Data;
   } catch (error) {
-    console.error(`Failed to retrieve screenshot ${screenshotId}:`, error);
+    console.error(`Error reconstructing screenshot ${screenshotId}:`, error);
     return null;
   }
 }
 
 /**
- * Saves screenshot data to local file system
- * @param {Buffer} screenshotData - The screenshot data
- * @param {string} feedbackId - The feedback ID to use in filename
- * @returns {Promise<string|null>} - The local path to the saved file or null on error
+ * Saves a base64 screenshot to the local filesystem
  */
-async function saveScreenshotLocally(screenshotData, feedbackId) {
-  if (!screenshotData) return null;
+async function saveScreenshotLocally(base64Data, feedbackId) {
+  if (!base64Data) return null;
   
   try {
-    const filename = `screenshot_${feedbackId}.png`;
-    const localPath = path.join(SCREENSHOTS_DIR, filename);
-    
-    // Write the file
-    fs.writeFileSync(localPath, screenshotData);
-    console.log(`Saved screenshot to ${localPath}`);
-    
-    // Return the path relative to the HTML file location for proper linking
-    return path.join('screenshots', filename);
+    const filePath = path.join(SCREENSHOTS_DIR, `feedback_${feedbackId}.png`);
+    fs.writeFileSync(filePath, Buffer.from(base64Data, "base64"));
+    console.log(`Saved screenshot for ${feedbackId}`);
+    return filePath.replace(LOGS_DIR + '/', '');
   } catch (error) {
     console.error(`Error saving screenshot for ${feedbackId}:`, error);
     return null;
   }
 }
 
-async function main() {
-  console.log('Starting Firestore Feedback data export');
-  console.log('Current working directory:', process.cwd());
-  console.log('Logs directory absolute path:', path.resolve(LOGS_DIR));
-  
-  // Get all feedback items
-  const feedbackQuery = admin
-    .firestore()
-    .collection('feedback')
-    .orderBy('timestamp', 'desc')
-    .limit(50); // Increased limit since we're just exporting
-  
-  const snapshot = await feedbackQuery.get();
-  console.log(`Found ${snapshot.size} total feedback items`);
-  
-  // Prepare data for export
-  const feedbackItems = await Promise.all(snapshot.docs.map(async (doc) => {
-    const data = doc.data();
-    const feedbackId = doc.id;
-    
-    // Handle screenshot if exists
-    let screenshotData = null;
-    if (data.screenshotId) {
-      try {
-        screenshotData = await reconstructScreenshot(data.screenshotId);
-        if (screenshotData) {
-          // Save screenshot locally
-          const localPath = await saveScreenshotLocally(screenshotData, feedbackId);
-          if (localPath) {
-            data.localScreenshotPath = localPath;
-          }
-        }
-      } catch (error) {
-        console.error(`Error processing screenshot for ${feedbackId}:`, error);
-      }
-    }
-    
-    return {
-      id: feedbackId,
-      ...data,
-      timestamp: data.timestamp?.toDate?.()?.toISOString() || new Date().toISOString(),
-    };
-  }));
-  
-  // Write to JSON file
-  const exportPath = path.join(LOGS_DIR, 'feedback_export.json');
-  fs.writeFileSync(
-    exportPath,
-    JSON.stringify({
-      exported_at: new Date().toISOString(),
-      total_items: feedbackItems.length,
-      feedback: feedbackItems
-    }, null, 2)
-  );
-  console.log(`Exported ${feedbackItems.length} items to ${exportPath}`);
-  
-  // Create HTML report
-  createHtmlIndex(feedbackItems);
-  console.log(`Created HTML report at ${path.join(LOGS_DIR, 'index.html')}`);
-  
-  // Write a summary file
-  const summaryPath = path.join(LOGS_DIR, 'export_summary.txt');
-  const summary = `
-Feedback Export Summary
-----------------------
-Exported at: ${new Date().toISOString()}
-Total items: ${feedbackItems.length}
-With screenshots: ${feedbackItems.filter(item => item.screenshotId).length}
-Export location: ${exportPath}
-HTML report: ${path.join(LOGS_DIR, 'index.html')}
-  `.trim();
-  fs.writeFileSync(summaryPath, summary);
-  console.log(`Written summary to ${summaryPath}`);
-}
-
-// Simplified HTML index creation
+/**
+ * Creates a simple HTML index for browsing feedback
+ */
 function createHtmlIndex(feedbackItems) {
-  const htmlPath = path.join(LOGS_DIR, 'index.html');
+  const htmlPath = path.join(LOGS_DIR, "index.html");
   
   let html = `
 <!DOCTYPE html>
@@ -156,6 +121,7 @@ function createHtmlIndex(feedbackItems) {
   
   <div class="feedback-items">
   `;
+  
   feedbackItems.forEach((item) => {
     html += `
     <div class="feedback-item">
@@ -175,18 +141,104 @@ function createHtmlIndex(feedbackItems) {
     </div>
     `;
   });
+  
   html += `
   </div>
 </body>
 </html>
   `;
+  
   fs.writeFileSync(htmlPath, html);
+  console.log(`Created HTML index at ${htmlPath}`);
 }
 
+/**
+ * Main function to retrieve feedback from Firestore and save it
+ */
+async function main() {
+  console.log("Starting Firestore feedback export");
+  console.log("Working directory:", process.cwd());
+  
+  try {
+    // Get feedback data from Firestore
+    const feedbackQuery = admin
+      .firestore()
+      .collection("feedback")
+      .orderBy("timestamp", "desc")
+      .limit(50);
+    
+    const snapshot = await feedbackQuery.get();
+    console.log(`Found ${snapshot.size} feedback items`);
+    
+    // Process each feedback item
+    const feedbackItems = await Promise.all(snapshot.docs.map(async (doc) => {
+      const data = doc.data();
+      const feedbackId = doc.id;
+      
+      // Handle screenshot if exists
+      if (data.screenshotId) {
+        try {
+          const base64Data = await reconstructScreenshot(data.screenshotId);
+          if (base64Data) {
+            const localPath = await saveScreenshotLocally(base64Data, feedbackId);
+            data.localScreenshotPath = localPath;
+          }
+        } catch (error) {
+          console.error(`Error processing screenshot for ${feedbackId}:`, error);
+        }
+      }
+      
+      // Convert timestamp to string
+      return {
+        id: feedbackId,
+        ...data,
+        timestamp: data.timestamp?.toDate?.()?.toISOString() || new Date().toISOString()
+      };
+    }));
+    
+    // Save to JSON file
+    const exportPath = path.join(LOGS_DIR, "feedback_export.json");
+    fs.writeFileSync(
+      exportPath,
+      JSON.stringify({
+        exported_at: new Date().toISOString(),
+        total_items: feedbackItems.length,
+        feedback: feedbackItems
+      }, null, 2)
+    );
+    console.log(`Exported ${feedbackItems.length} items to ${exportPath}`);
+    
+    // Create HTML report
+    createHtmlIndex(feedbackItems);
+    
+    // Write a summary file
+    const summaryPath = path.join(LOGS_DIR, "export_summary.txt");
+    const summary = `
+Feedback Export Summary
+----------------------
+Exported at: ${new Date().toISOString()}
+Total items: ${feedbackItems.length}
+With screenshots: ${feedbackItems.filter(item => item.localScreenshotPath).length}
+Export location: ${exportPath}
+HTML report: ${path.join(LOGS_DIR, "index.html")}
+`.trim();
+    fs.writeFileSync(summaryPath, summary);
+    console.log(`Written summary to ${summaryPath}`);
+    
+    return feedbackItems;
+  } catch (error) {
+    console.error("Error exporting feedback:", error);
+    process.exit(1);
+  }
+}
 
 // Execute the main function
-main().then(() => {
-  console.log('Export completed successfully');
-}).catch(error => {
-  console.error('Export failed:', error);
-});
+main()
+  .then(() => {
+    console.log("Export completed successfully");
+    process.exit(0);
+  })
+  .catch((error) => {
+    console.error("Export failed:", error);
+    process.exit(1);
+  });
