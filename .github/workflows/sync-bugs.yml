@@ -9,7 +9,6 @@ permissions:
   contents: read
   issues: write
   repository-projects: write
-  organization-projects: write  # If using org projects
 
 jobs:
   sync-feedback:
