@@ -341,21 +341,24 @@ async function main() {
 
   // Simplify the query to avoid the composite index requirement
   // Instead of using complex where clauses with ordering, just query for items without GitHub URLs
+  // This will get ALL feedback that hasn't been processed
   const newFeedbackQuery = admin
     .firestore()
-    .collection(FEEDBACK_COLLECTION)
-    .where("githubIssueUrl", "==", null)
+    .collection("feedback")
+    .orderBy("timestamp", "desc")
     .limit(10);
 
   const snapshot = await newFeedbackQuery.get();
-  console.log(`Found ${snapshot.size} feedback items without GitHub issues`);
+  console.log(`Found ${snapshot.size} total feedback items`);
 
-  // Filter in memory rather than in the query
-  const validDocs = snapshot.docs.filter(
-    (doc) => doc.data().githubIssueError === null
-  );
-  console.log(`Found ${validDocs.length} new feedback items to process`);
+  // Filter for unprocessed feedback in memory
+  const unprocessedDocs = snapshot.docs.filter((doc) => {
+    const data = doc.data();
+    return !data.githubIssueUrl && !data.githubIssueError;
+  });
 
+  console.log(`Found ${unprocessedDocs.length} unprocessed feedback items`);
+  
   // Sort by timestamp in memory (most recent first)
   validDocs.sort((a, b) => {
     const timestampA = a.data().timestamp?.toDate?.() || new Date(0);
