@@ -8,7 +8,6 @@ on:
 permissions:
   contents: read
   issues: write
-  gists: write  # For screenshot uploads
 
 jobs:
   sync-feedback:
@@ -34,7 +33,8 @@ jobs:
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # For gist creation, we need to use a personal access token with gist scope
+          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}  # Use a PAT with gists scope
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
           GITHUB_OWNER: 'judinilson'
           GITHUB_REPO: 'APP'
