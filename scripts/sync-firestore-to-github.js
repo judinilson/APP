@@ -54,8 +54,17 @@ const FEEDBACK_LOG_FILE = 'feedback_processing_log.json';
 
 // Create a directory for feedback logs and screenshots
 const LOGS_DIR = 'feedback_logs';
+const SCREENSHOTS_DIR = path.join(LOGS_DIR, "screenshots");
+
+// Create directories if they don't exist
 if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
+  console.log(`Created directory: ${LOGS_DIR}`);
+}
+
+if (!fs.existsSync(SCREENSHOTS_DIR)) {
+  fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
+  console.log(`Created directory: ${SCREENSHOTS_DIR}`);
 }
 
 async function reconstructScreenshot(screenshotId) {
@@ -127,7 +136,7 @@ async function uploadScreenshotToGist(base64Image, feedbackId) {
   }
 }
 
-// Also save screenshot locally as a backup
+// Update your saveScreenshotLocally function with better error handling
 async function saveScreenshotLocally(base64Image, feedbackId) {
   try {
     if (!base64Image) return null;
@@ -142,48 +151,73 @@ async function saveScreenshotLocally(base64Image, feedbackId) {
       : 'image/png';
     
     const extension = mimeType.includes('png') ? 'png' : 'jpg';
-    const screenshotDir = path.join(LOGS_DIR, 'screenshots');
     
-    if (!fs.existsSync(screenshotDir)) {
-      fs.mkdirSync(screenshotDir, { recursive: true });
+    // Ensure the screenshots directory exists
+    if (!fs.existsSync(SCREENSHOTS_DIR)) {
+      console.log(`Screenshots directory doesn't exist, creating it...`);
+      fs.mkdirSync(SCREENSHOTS_DIR, { recursive: true });
     }
     
-    const filePath = path.join(screenshotDir, `feedback_${feedbackId}.${extension}`);
-    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+    const filePath = path.join(SCREENSHOTS_DIR, `feedback_${feedbackId}.${extension}`);
     
-    console.log(`Saved screenshot locally at: ${filePath}`);
-    return filePath;
+    // Write the file
+    try {
+      fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+      console.log(`Saved screenshot locally at: ${filePath}`);
+      return filePath;
+    } catch (writeError) {
+      console.error(`Error writing screenshot file: ${writeError.message}`);
+      console.error(`Path: ${filePath}`);
+      console.error(`Directory exists: ${fs.existsSync(SCREENSHOTS_DIR)}`);
+      console.error(`Directory is writable: ${fs.accessSync(SCREENSHOTS_DIR, fs.constants.W_OK)}`);
+      return null;
+    }
   } catch (error) {
     console.error(`Error saving screenshot locally:`, error);
     return null;
   }
 }
 
-// Update the feedback log file with new entries
+// Similarly update updateFeedbackLog with better error handling
 function updateFeedbackLog(feedbackData) {
-  const logPath = path.join(LOGS_DIR, FEEDBACK_LOG_FILE);
-  
-  // Read existing log or create new one
-  let logEntries = [];
   try {
-    if (fs.existsSync(logPath)) {
-      const logContent = fs.readFileSync(logPath, 'utf8');
-      logEntries = JSON.parse(logContent);
+    const logPath = path.join(LOGS_DIR, FEEDBACK_LOG_FILE);
+    
+    // Read existing log or create new one
+    let logEntries = [];
+    try {
+      if (fs.existsSync(logPath)) {
+        const logContent = fs.readFileSync(logPath, 'utf8');
+        logEntries = JSON.parse(logContent);
+      }
+    } catch (readError) {
+      console.error(`Error reading log file: ${readError.message}`);
+      // Continue with empty log if file is corrupted
+    }
+    
+    // Add new entry
+    logEntries.push(feedbackData);
+    
+    // Write updated log
+    try {
+      fs.writeFileSync(logPath, JSON.stringify(logEntries, null, 2), 'utf8');
+      console.log(`Updated feedback log at: ${logPath}`);
+    } catch (writeError) {
+      console.error(`Error writing log file: ${writeError.message}`);
+      console.error(`Path: ${logPath}`);
+      console.error(`Directory exists: ${fs.existsSync(LOGS_DIR)}`);
+      console.error(`Directory is writable: ${fs.accessSync(LOGS_DIR, fs.constants.W_OK)}`);
+    }
+    
+    // Also create a simple HTML index for easy viewing
+    try {
+      createHtmlIndex(logEntries);
+    } catch (htmlError) {
+      console.error(`Error creating HTML index: ${htmlError.message}`);
     }
   } catch (error) {
-    console.error(`Error reading log file: ${error.message}`);
-    // Continue with empty log if file is corrupted
+    console.error(`Error updating feedback log:`, error);
   }
-  
-  // Add new entry
-  logEntries.push(feedbackData);
-  
-  // Write updated log
-  fs.writeFileSync(logPath, JSON.stringify(logEntries, null, 2), 'utf8');
-  console.log(`Updated feedback log at: ${logPath}`);
-  
-  // Also create a simple HTML index for easy viewing
-  createHtmlIndex(logEntries);
 }
 
 // Create a simple HTML index for easier manual review
