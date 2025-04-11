@@ -2,6 +2,7 @@ const { Octokit } = require('@octokit/rest');
 const admin = require('firebase-admin');
 
 // Initialize Firebase Admin
+// Initialize Firebase Admin
 let serviceAccount;
 try {
   const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT;
@@ -9,9 +10,25 @@ try {
     throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set');
   }
   
-  const decodedKey = Buffer.from(base64Key, 'base64').toString('utf8');
+  // Try different decoding approaches
+  let decodedKey;
+  try {
+    // First method: standard base64 decoding
+    decodedKey = Buffer.from(base64Key, 'base64').toString('utf8');
+    
+    // Check if result starts with a { character (valid JSON)
+    if (!decodedKey.trim().startsWith('{')) {
+      throw new Error('Not a valid JSON after decoding');
+    }
+  } catch (decodeError) {
+    console.log("Standard base64 decoding failed, trying URL-safe base64...");
+    // Try URL-safe base64 decoding
+    decodedKey = Buffer.from(base64Key.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+  }
+  
   console.log("Decoded key (first 20 chars):", decodedKey.substring(0, 20) + "...");
   
+  // Make sure we have valid JSON
   serviceAccount = JSON.parse(decodedKey);
   
   // Verify that the decoded object has the required fields
@@ -21,6 +38,12 @@ try {
 } catch (error) {
   console.error('Error parsing Firebase service account:', error.message);
   console.error('Make sure the FIREBASE_SERVICE_ACCOUNT is properly base64 encoded');
+  
+  // Add more debugging info
+  const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT || '';
+  console.error('Base64 key length:', base64Key.length);
+  console.error('Base64 key starts with:', base64Key.substring(0, 10) + '...');
+  
   process.exit(1);
 }
 
