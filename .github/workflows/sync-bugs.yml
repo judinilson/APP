@@ -2,8 +2,8 @@ name: Sync Feedback to GitHub Issues
 
 on:
   schedule:
-    - cron: '0 */2 * * *'  # Run every 2 hours
-  workflow_dispatch:  # Allow manual triggering
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
 
 jobs:
   sync-feedback:
@@ -17,8 +17,8 @@ jobs:
         with:
           node-version: '16'
           
-      - name: Install dependencies
-        run: npm ci
+      - name: Install specific dependencies
+        run: npm install @octokit/rest firebase-admin
         
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
