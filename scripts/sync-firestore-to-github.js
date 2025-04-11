@@ -296,26 +296,23 @@ async function main() {
       let localScreenshotPath = null;
       
       if (screenshot_ref) {
-        console.log(`Retrieving screenshot ${screenshot_ref} for feedback ${feedbackId}`);
-        const base64Image = await reconstructScreenshot(screenshot_ref);
-        
-        if (base64Image) {
-          // Save screenshot locally
-          localScreenshotPath = await saveScreenshotLocally(base64Image, feedbackId);
-          
-          // Upload image to GitHub Gist
-          gistInfo = await uploadScreenshotToGist(base64Image, feedbackId);
-          
-          if (gistInfo) {
-            screenshotMarkdown = `### Screenshot
-![Screenshot](${gistInfo.raw_url})
-
-*[View full screenshot](${gistInfo.url})*`;
-          } else {
-            screenshotMarkdown = '*Screenshot was available but could not be uploaded*';
-          }
-        }
-      }
+  console.log(`Retrieving screenshot ${screenshot_ref} for feedback ${feedbackId}`);
+  const base64Image = await reconstructScreenshot(screenshot_ref);
+  
+  if (base64Image) {
+    // Only save screenshot locally
+    localScreenshotPath = await saveScreenshotLocally(base64Image, feedbackId);
+    
+    if (localScreenshotPath) {
+      // Use a relative path for markdown (within the artifact)
+      const relativeScreenshotPath = path.relative(LOGS_DIR, localScreenshotPath);
+      screenshotMarkdown = `### Screenshot
+*Screenshot saved locally and available in the workflow artifacts*`;
+    } else {
+      screenshotMarkdown = '*Screenshot was available but could not be saved*';
+    }
+  }
+}
 
       // Format the issue body
       const issueBody = `
