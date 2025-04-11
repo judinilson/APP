@@ -368,11 +368,52 @@ async function main() {
     return timestampB - timestampA;
   });
 
+  // Write initial data to logs
+  const initialLogPath = path.join(LOGS_DIR, "initial_feedback.json");
+  fs.writeFileSync(
+    initialLogPath,
+    JSON.stringify(
+      {
+        timestamp: new Date().toISOString(),
+        total_found: snapshot.size,
+        unprocessed: unprocessedDocs.length,
+        feedback_items: unprocessedDocs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        })),
+      },
+      null,
+      2
+    )
+  );
+  console.log(`Written initial feedback data to ${initialLogPath}`);
+
   for (const doc of unprocessedDocs) {
     const feedbackData = doc.data();
     const feedbackId = doc.id;
 
+    console.log("Feedback Data:", {
+      id: feedbackId,
+      text: feedbackData.text,
+      platform: feedbackData.platform,
+      screenshot: feedbackData.screenshotId ? "Present" : "None",
+    });
+
     try {
+      // Add verification for GitHub token
+      if (!process.env.GITHUB_TOKEN) {
+        throw new Error("GITHUB_TOKEN is not set");
+      }
+
+      // Test GitHub API access
+      try {
+        await octokit.rest.users.getAuthenticated();
+        console.log("GitHub authentication successful");
+      } catch (githubError) {
+        console.error("GitHub authentication failed:", githubError.message);
+        throw githubError;
+      }
+
       console.log(`Processing feedback ${feedbackId}`);
 
       // 1. Handle screenshot if exists
