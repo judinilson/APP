@@ -23,7 +23,7 @@ jobs:
           node-version: '16'
           
       - name: Install specific dependencies
-        run: npm install @octokit/rest @octokit/graphql firebase-admin
+        run: npm install @octokit/rest firebase-admin @octokit/graphql@4.8.0
 
       - name: Prepare Firebase credentials
         run: |
