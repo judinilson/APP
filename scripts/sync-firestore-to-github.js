@@ -2,48 +2,36 @@ const { Octokit } = require('@octokit/rest');
 const admin = require('firebase-admin');
 
 // Initialize Firebase Admin
-// Initialize Firebase Admin
 let serviceAccount;
 try {
-  const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!base64Key) {
-    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set');
+  const fs = require('fs');
+  
+  // Get the service account from file
+  const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH;
+  
+  if (!serviceAccountPath) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT_PATH environment variable is not set');
   }
   
-  // Try different decoding approaches
-  let decodedKey;
+  console.log(`Reading service account from: ${serviceAccountPath}`);
+  
+  // Read and parse the service account file
   try {
-    // First method: standard base64 decoding
-    decodedKey = Buffer.from(base64Key, 'base64').toString('utf8');
-    
-    // Check if result starts with a { character (valid JSON)
-    if (!decodedKey.trim().startsWith('{')) {
-      throw new Error('Not a valid JSON after decoding');
-    }
-  } catch (decodeError) {
-    console.log("Standard base64 decoding failed, trying URL-safe base64...");
-    // Try URL-safe base64 decoding
-    decodedKey = Buffer.from(base64Key.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const fileContent = fs.readFileSync(serviceAccountPath, 'utf8');
+    serviceAccount = JSON.parse(fileContent);
+  } catch (fileError) {
+    console.error(`Error reading or parsing service account file: ${fileError.message}`);
+    throw fileError;
   }
   
-  console.log("Decoded key (first 20 chars):", decodedKey.substring(0, 20) + "...");
-  
-  // Make sure we have valid JSON
-  serviceAccount = JSON.parse(decodedKey);
-  
-  // Verify that the decoded object has the required fields
+  // Verify that the service account has the required fields
   if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
-    throw new Error('The decoded service account is missing required fields');
+    throw new Error('The service account is missing required fields');
   }
+  
+  console.log(`Successfully loaded service account for project: ${serviceAccount.project_id}`);
 } catch (error) {
-  console.error('Error parsing Firebase service account:', error.message);
-  console.error('Make sure the FIREBASE_SERVICE_ACCOUNT is properly base64 encoded');
-  
-  // Add more debugging info
-  const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT || '';
-  console.error('Base64 key length:', base64Key.length);
-  console.error('Base64 key starts with:', base64Key.substring(0, 10) + '...');
-  
+  console.error('Error loading Firebase service account:', error.message);
   process.exit(1);
 }
 
