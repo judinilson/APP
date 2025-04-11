@@ -204,26 +204,30 @@ async function saveScreenshotLocally(base64Image, feedbackId) {
 function updateFeedbackLog(feedbackData) {
   try {
     const logPath = path.join(LOGS_DIR, FEEDBACK_LOG_FILE);
+    console.log("Attempting to write log to:", logPath); // Debug log
 
     // Read existing log or create new one
     let logEntries = [];
     try {
       if (fs.existsSync(logPath)) {
+        console.log("Existing log file found"); // Debug log
         const logContent = fs.readFileSync(logPath, "utf8");
         logEntries = JSON.parse(logContent);
+      } else {
+        console.log("No existing log file, creating new one"); // Debug log
       }
     } catch (readError) {
       console.error(`Error reading log file: ${readError.message}`);
-      // Continue with empty log if file is corrupted
     }
 
     // Add new entry
     logEntries.push(feedbackData);
+    console.log("Added new entry to log, total entries:", logEntries.length); // Debug log
 
     // Write updated log
     try {
       fs.writeFileSync(logPath, JSON.stringify(logEntries, null, 2), "utf8");
-      console.log(`Updated feedback log at: ${logPath}`);
+      console.log(`Successfully wrote log file to: ${logPath}`); // Debug log
     } catch (writeError) {
       console.error(`Error writing log file: ${writeError.message}`);
       console.error(`Path: ${logPath}`);
@@ -231,13 +235,6 @@ function updateFeedbackLog(feedbackData) {
       console.error(
         `Directory is writable: ${fs.accessSync(LOGS_DIR, fs.constants.W_OK)}`
       );
-    }
-
-    // Also create a simple HTML index for easy viewing
-    try {
-      createHtmlIndex(logEntries);
-    } catch (htmlError) {
-      console.error(`Error creating HTML index: ${htmlError.message}`);
     }
   } catch (error) {
     console.error(`Error updating feedback log:`, error);
@@ -338,6 +335,10 @@ async function main() {
   console.log(
     `Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`
   );
+
+  // Add this debug info
+  console.log("Current working directory:", process.cwd());
+  console.log("Logs directory absolute path:", path.resolve(LOGS_DIR));
 
   // Simplify the query to avoid the composite index requirement
   // Instead of using complex where clauses with ordering, just query for items without GitHub URLs
