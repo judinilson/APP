@@ -52,6 +52,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
-          GITHUB_OWNER: 'dnre'
+          GITHUB_OWNER: 'judinilson'  # Changed from 'dnre'
           GITHUB_REPO: 'APP'
           PROJECT_NAME: 'Dnre-bug-tracking'
+          PROJECT_NUMBER: 7  # Added this
