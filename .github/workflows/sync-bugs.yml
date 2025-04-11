@@ -24,22 +24,25 @@ jobs:
       - name: Install specific dependencies
         run: npm install @octokit/rest firebase-admin
         
-      - name: Prepare Firebase credentials
+      - name: Create directory structure
         run: |
           mkdir -p /tmp/credentials
+          mkdir -p feedback_logs/screenshots
+        
+      - name: Prepare Firebase credentials
+        run: |
           echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" | base64 -d > /tmp/credentials/service-account.json
           ls -la /tmp/credentials/service-account.json
       
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
         env:
-          # For gist creation, we need to use a personal access token with gist scope
-          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}  # Use a PAT with gists scope
+          GITHUB_TOKEN: ${{ secrets.GITHUB_PAT }}
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
           GITHUB_OWNER: 'judinilson'
           GITHUB_REPO: 'APP'
           
-      - name: Upload Feedback Logs
+      - name: List Feedback Logs
         if: always()  # Run even if previous steps failed
         uses: actions/upload-artifact@v4 # Changed from v3 to v2
         with:
