@@ -1,30 +1,30 @@
-name: Sync Firestore Bug Reports to GitHub Issues
+name: Sync Feedback to GitHub Issues
 
 on:
   schedule:
-    # Run every hour
-    - cron: '0 * * * *'
-  workflow_dispatch:
-    # Allow manual triggering
+    - cron: '0 */2 * * *'  # Run every 2 hours
+  workflow_dispatch:  # Allow manual triggering
 
 jobs:
-  sync-bug-reports:
+  sync-feedback:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v3
-
-      - name: Set up Node.js
+        
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
-          cache: 'npm'
-
+          node-version: '16'
+          
       - name: Install dependencies
         run: npm ci
-
-      - name: Sync Firestore to GitHub Issues
+        
+      - name: Sync Feedback to Issues
+        run: node scripts/sync-firestore-to-github.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node scripts/sync-firestore-to-github.js
+          GITHUB_OWNER: 'dnre'
+          GITHUB_REPO: 'APP'
+          PROJECT_NAME: 'Dnre-bug-tracking'
