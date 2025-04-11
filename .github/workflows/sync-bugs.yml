@@ -19,12 +19,33 @@ jobs:
           
       - name: Install specific dependencies
         run: npm install @octokit/rest firebase-admin
+
+      - name: Prepare Firebase credentials
+        run: |
+          # First, save the secret to a file
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > firebase-credentials.json
+          # Print file info (no sensitive data)
+          ls -la firebase-credentials.json
+          # Check if it's already JSON
+          if cat firebase-credentials.json | grep -q "\"type\""; then
+            echo "Secret appears to be in JSON format, not base64"
+            cat firebase-credentials.json > firebase-credentials-decoded.json
+          else
+            echo "Attempting to decode base64 secret"
+            cat firebase-credentials.json | base64 -d > firebase-credentials-decoded.json || true
+          fi
+          # Check the result (safely)
+          if grep -q "\"type\"" firebase-credentials-decoded.json; then
+            echo "Credentials appear to be valid JSON"
+          else
+            echo "Failed to get valid JSON credentials"
+          fi
             
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          FIREBASE_SERVICE_ACCOUNT_FILE: firebase-credentials-decoded.json
           GITHUB_OWNER: 'dnre'
           GITHUB_REPO: 'APP'
           PROJECT_NAME: 'Dnre-bug-tracking'
