@@ -358,15 +358,16 @@ async function main() {
   });
 
   console.log(`Found ${unprocessedDocs.length} unprocessed feedback items`);
-  
-  // Sort by timestamp in memory (most recent first)
-  validDocs.sort((a, b) => {
+
+  // Change this part - validDocs should be unprocessedDocs
+  unprocessedDocs.sort((a, b) => {
+    // Changed from validDocs to unprocessedDocs
     const timestampA = a.data().timestamp?.toDate?.() || new Date(0);
     const timestampB = b.data().timestamp?.toDate?.() || new Date(0);
     return timestampB - timestampA;
   });
 
-  for (const doc of validDocs) {
+  for (const doc of unprocessedDocs) {
     const feedbackData = doc.data();
     const feedbackId = doc.id;
 
