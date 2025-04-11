@@ -1,0 +1,17 @@
+{
+  "name": "dnre-feedback-sync",
+  "version": "1.0.0",
+  "description": "Syncs feedback from Firestore to GitHub Issues",
+  "main": "scripts/sync-firestore-to-github.js",
+  "scripts": {
+    "sync": "node scripts/sync-firestore-to-github.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^19.0.7",
+    "firebase-admin": "^11.9.0"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "private": true
+}
