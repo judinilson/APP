@@ -10,7 +10,6 @@ permissions:
   issues: write
   pull-requests: read
   repository-projects: write
-  organization-projects: write
 
 jobs:
   sync-feedback:
