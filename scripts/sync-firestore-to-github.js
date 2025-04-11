@@ -1,7 +1,7 @@
 const { Octokit } = require('@octokit/rest');
-const { graphql } = require('@octokit/graphql');
 const admin = require('firebase-admin');
 const fs = require('fs');
+const path = require('path');
 
 // Initialize Firebase Admin
 let serviceAccount;
@@ -44,127 +44,18 @@ const octokit = new Octokit({
   auth: process.env.GITHUB_TOKEN
 });
 
-// For GraphQL operations
-const graphqlWithAuth = graphql.defaults({
-  headers: {
-    authorization: `token ${process.env.GITHUB_TOKEN}`
-  }
-});
-
-// Repository and project configuration
-const GITHUB_OWNER = process.env.GITHUB_OWNER || 'dnre';
+// Repository configuration
+const GITHUB_OWNER = process.env.GITHUB_OWNER || 'judinilson';
 const GITHUB_REPO = process.env.GITHUB_REPO || 'APP';
-const PROJECT_NAME = process.env.PROJECT_NAME || 'Dnre-bug-tracking';
 const FEEDBACK_COLLECTION = 'feedback';
 const SCREENSHOTS_COLLECTION = 'feedback_screenshots';
 const DEFAULT_STATUS = 'status:reportado';
-const PROJECT_NUMBER = process.env.PROJECT_NUMBER || 7
+const FEEDBACK_LOG_FILE = 'feedback_processing_log.json';
 
-// Function to get project ID from project name - checks both org and repo projects
-async function getProjectId() {
-  try {
-    console.log(`Looking for project #${PROJECT_NUMBER} for user "${GITHUB_OWNER}"`);
-    
-    // Try direct API request for the specific project (by number)
-    try {
-      const { data: project } = await octokit.request('GET /users/{username}/projects/{project_number}', {
-        username: GITHUB_OWNER,
-        project_number: PROJECT_NUMBER
-      });
-      
-      console.log(`Found user project: ${project.name}`);
-      return {
-        id: project.id,
-        number: project.number,
-        type: 'user'
-      };
-    } catch (error) {
-      console.error(`Error getting specific project: ${error.message}`);
-    }
-    
-    // Fallback to listing all user projects
-    try {
-      const { data: userProjects } = await octokit.rest.projects.listForUser({
-        username: GITHUB_OWNER,
-        per_page: 100
-      });
-      
-      console.log("Available projects for user:");
-      userProjects.forEach(p => console.log(`- #${p.number}: ${p.name}`));
-      
-      // First try by number
-      const projectByNumber = userProjects.find(p => p.number === PROJECT_NUMBER);
-      if (projectByNumber) {
-        console.log(`Found user project by number: ${projectByNumber.name}`);
-        return {
-          id: projectByNumber.id,
-          number: projectByNumber.number,
-          type: 'user'
-        };
-      }
-      
-      // Then try by name
-      const projectByName = userProjects.find(p => p.name === PROJECT_NAME);
-      if (projectByName) {
-        console.log(`Found user project by name: ${projectByName.name}`);
-        return {
-          id: projectByName.id,
-          number: projectByName.number,
-          type: 'user'
-        };
-      }
-    } catch (userError) {
-      console.error(`Error listing user projects: ${userError.message}`);
-    }
-    
-    console.error(`Could not find project #${PROJECT_NUMBER} or "${PROJECT_NAME}" for user "${GITHUB_OWNER}"`);
-    return null;
-  } catch (error) {
-    console.error('Error getting project ID:', error);
-    return null;
-  }
-}
-
-// Function to add an issue to a project using GraphQL
-async function addIssueToProject(issueId, projectInfo) {
-  try {
-    if (!projectInfo || !projectInfo.id) {
-      console.error('Invalid project information');
-      return false;
-    }
-    
-    // Convert issueId to node ID if necessary
-    let issueNodeId = issueId;
-    if (!issueNodeId.startsWith('I_')) {
-      // Fetch the node ID if we only have the issue number
-      const { data: issue } = await octokit.rest.issues.get({
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
-        issue_number: issueId
-      });
-      issueNodeId = issue.node_id;
-    }
-    
-    // Add the issue to the project
-    const result = await graphqlWithAuth(`
-      mutation {
-        addProjectV2ItemById(input: {
-          projectId: "${projectInfo.id}"
-          contentId: "${issueNodeId}"
-        }) {
-          item {
-            id
-          }
-        }
-      }
-    `);
-    
-    console.log(`Added issue to project "${PROJECT_NAME}"`);
-    return true;
-  } catch (error) {
-    console.error('Error adding issue to project:', error);
-    return false;
-  }
+// Create a directory for feedback logs and screenshots
+const LOGS_DIR = 'feedback_logs';
+if (!fs.existsSync(LOGS_DIR)) {
+  fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
 
 async function reconstructScreenshot(screenshotId) {
@@ -236,18 +127,139 @@ async function uploadScreenshotToGist(base64Image, feedbackId) {
   }
 }
 
+// Also save screenshot locally as a backup
+async function saveScreenshotLocally(base64Image, feedbackId) {
+  try {
+    if (!base64Image) return null;
+    
+    // Make sure we have just the base64 data without the prefix
+    const base64Data = base64Image.includes(';base64,') 
+      ? base64Image.split(';base64,')[1] 
+      : base64Image;
+    
+    const mimeType = base64Image.includes(';base64,') 
+      ? base64Image.split(';base64,')[0].replace('data:', '') 
+      : 'image/png';
+    
+    const extension = mimeType.includes('png') ? 'png' : 'jpg';
+    const screenshotDir = path.join(LOGS_DIR, 'screenshots');
+    
+    if (!fs.existsSync(screenshotDir)) {
+      fs.mkdirSync(screenshotDir, { recursive: true });
+    }
+    
+    const filePath = path.join(screenshotDir, `feedback_${feedbackId}.${extension}`);
+    fs.writeFileSync(filePath, Buffer.from(base64Data, 'base64'));
+    
+    console.log(`Saved screenshot locally at: ${filePath}`);
+    return filePath;
+  } catch (error) {
+    console.error(`Error saving screenshot locally:`, error);
+    return null;
+  }
+}
+
+// Update the feedback log file with new entries
+function updateFeedbackLog(feedbackData) {
+  const logPath = path.join(LOGS_DIR, FEEDBACK_LOG_FILE);
+  
+  // Read existing log or create new one
+  let logEntries = [];
+  try {
+    if (fs.existsSync(logPath)) {
+      const logContent = fs.readFileSync(logPath, 'utf8');
+      logEntries = JSON.parse(logContent);
+    }
+  } catch (error) {
+    console.error(`Error reading log file: ${error.message}`);
+    // Continue with empty log if file is corrupted
+  }
+  
+  // Add new entry
+  logEntries.push(feedbackData);
+  
+  // Write updated log
+  fs.writeFileSync(logPath, JSON.stringify(logEntries, null, 2), 'utf8');
+  console.log(`Updated feedback log at: ${logPath}`);
+  
+  // Also create a simple HTML index for easy viewing
+  createHtmlIndex(logEntries);
+}
+
+// Create a simple HTML index for easier manual review
+function createHtmlIndex(logEntries) {
+  const htmlPath = path.join(LOGS_DIR, 'index.html');
+  
+  let html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Feedback Log</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    .feedback-item { border: 1px solid #ddd; padding: 15px; margin-bottom: 20px; border-radius: 5px; }
+    .feedback-item h2 { margin-top: 0; }
+    .metadata { color: #666; font-size: 0.9em; }
+    .content { margin: 15px 0; }
+    .screenshot { max-width: 300px; margin-top: 10px; }
+    .github-link { background: #0366d6; color: white; padding: 5px 10px; text-decoration: none; border-radius: 3px; }
+    .github-link:hover { background: #024ea7; }
+    .timestamp { font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Feedback Log</h1>
+  <p>Last updated: ${new Date().toLocaleString()}</p>
+  <p>Total entries: ${logEntries.length}</p>
+  
+  <div class="feedback-items">
+  `;
+  
+  // Sort by date (newest first)
+  logEntries.sort((a, b) => {
+    return new Date(b.processedAt || 0) - new Date(a.processedAt || 0);
+  });
+  
+  // Add each feedback entry
+  logEntries.forEach(entry => {
+    const date = entry.processedAt ? new Date(entry.processedAt).toLocaleString() : 'Unknown date';
+    
+    html += `
+    <div class="feedback-item">
+      <h2>${entry.title || 'Untitled feedback'}</h2>
+      <div class="metadata">
+        <p><strong>ID:</strong> ${entry.id}</p>
+        <p><strong>Platform:</strong> ${entry.platform || 'Unknown'}</p>
+        <p><strong>App version:</strong> ${entry.app_version || 'Unknown'} ${entry.build_number ? `(Build ${entry.build_number})` : ''}</p>
+        <p><strong>User:</strong> ${entry.user_email || 'Anonymous'}</p>
+        <p class="timestamp">Processed: ${date}</p>
+      </div>
+      
+      <div class="content">
+        <p>${entry.text || 'No content provided'}</p>
+      </div>
+      
+      ${entry.localScreenshotPath ? `<img src="${entry.localScreenshotPath.replace(LOGS_DIR + '/', '')}" class="screenshot" />` : ''}
+      ${entry.screenshotUrl ? `<p><a href="${entry.screenshotUrl}" target="_blank">View full screenshot</a></p>` : ''}
+      
+      ${entry.githubIssueUrl ? `<p><a href="${entry.githubIssueUrl}" target="_blank" class="github-link">View GitHub Issue #${entry.githubIssueNumber}</a></p>` : ''}
+    </div>
+    `;
+  });
+  
+  html += `
+  </div>
+</body>
+</html>
+  `;
+  
+  fs.writeFileSync(htmlPath, html, 'utf8');
+  console.log(`Created HTML index at: ${htmlPath}`);
+}
+
 async function main() {
   console.log(`Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`);
   
-  // Get project ID first
-  const projectInfo = await getProjectId();
-  if (!projectInfo) {
-    console.error(`Cannot proceed: Project ${PROJECT_NAME} not found or cannot be accessed`);
-    process.exit(1);
-  }
-  
-  console.log(`Found project "${PROJECT_NAME}" with ID: ${projectInfo.id}`);
-
   // Query for feedback reports that don't have GitHub issues yet
   const newFeedbackQuery = admin.firestore()
     .collection(FEEDBACK_COLLECTION)
@@ -280,13 +292,19 @@ async function main() {
 
       // Prepare screenshot
       let screenshotMarkdown = '';
+      let gistInfo = null;
+      let localScreenshotPath = null;
+      
       if (screenshot_ref) {
         console.log(`Retrieving screenshot ${screenshot_ref} for feedback ${feedbackId}`);
         const base64Image = await reconstructScreenshot(screenshot_ref);
         
         if (base64Image) {
-          // Upload image to GitHub Gist since it's too large for issue body
-          const gistInfo = await uploadScreenshotToGist(base64Image, feedbackId);
+          // Save screenshot locally
+          localScreenshotPath = await saveScreenshotLocally(base64Image, feedbackId);
+          
+          // Upload image to GitHub Gist
+          gistInfo = await uploadScreenshotToGist(base64Image, feedbackId);
           
           if (gistInfo) {
             screenshotMarkdown = `### Screenshot
@@ -342,22 +360,39 @@ ${screenshotMarkdown}
         body: issueBody,
         labels: labels,
       });
-      
-      // Add issue to project
-      const addedToProject = await addIssueToProject(response.data.node_id, projectInfo);
 
       // Update Firestore document with GitHub issue URL
       await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
         githubIssueUrl: response.data.html_url,
         githubIssueNumber: response.data.number,
         githubRepo: `${GITHUB_OWNER}/${GITHUB_REPO}`,
-        githubProject: PROJECT_NAME,
-        addedToProject: addedToProject,
         status: 'Reportado',
         processedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      console.log(`Created GitHub issue #${response.data.number} for feedback ${feedbackId} and added to project "${PROJECT_NAME}"`);
+      // Log entry for manual review
+      const logEntry = {
+        id: feedbackId,
+        title: issueTitle,
+        text: text,
+        app_version,
+        build_number,
+        platform,
+        device_info,
+        user_email,
+        timestamp: timestamp?.toDate ? timestamp.toDate().toISOString() : null,
+        processedAt: new Date().toISOString(),
+        githubIssueUrl: response.data.html_url,
+        githubIssueNumber: response.data.number,
+        screenshotUrl: gistInfo ? gistInfo.url : null,
+        screenshotRawUrl: gistInfo ? gistInfo.raw_url : null,
+        localScreenshotPath: localScreenshotPath
+      };
+      
+      updateFeedbackLog(logEntry);
+
+      console.log(`Created GitHub issue #${response.data.number} for feedback ${feedbackId} (manual project addition required)`);
+      console.log(`Issue URL: ${response.data.html_url}`);
     } catch (error) {
       console.error(`Error creating GitHub issue for ${feedbackId}:`, error);
       
