@@ -2,9 +2,27 @@ const { Octokit } = require('@octokit/rest');
 const admin = require('firebase-admin');
 
 // Initialize Firebase Admin
-const serviceAccount = JSON.parse(
-  Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT, 'base64').toString('utf8')
-);
+let serviceAccount;
+try {
+  const base64Key = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!base64Key) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable is not set');
+  }
+  
+  const decodedKey = Buffer.from(base64Key, 'base64').toString('utf8');
+  console.log("Decoded key (first 20 chars):", decodedKey.substring(0, 20) + "...");
+  
+  serviceAccount = JSON.parse(decodedKey);
+  
+  // Verify that the decoded object has the required fields
+  if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+    throw new Error('The decoded service account is missing required fields');
+  }
+} catch (error) {
+  console.error('Error parsing Firebase service account:', error.message);
+  console.error('Make sure the FIREBASE_SERVICE_ACCOUNT is properly base64 encoded');
+  process.exit(1);
+}
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
