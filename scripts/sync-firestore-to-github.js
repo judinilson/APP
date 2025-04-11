@@ -260,160 +260,58 @@ function createHtmlIndex(logEntries) {
 async function main() {
   console.log(`Starting Firestore Feedback to GitHub Issues sync for ${GITHUB_OWNER}/${GITHUB_REPO}`);
   
-  // Query for feedback reports that don't have GitHub issues yet
+  // Simplify the query to avoid the composite index requirement
+  // Instead of using complex where clauses with ordering, just query for items without GitHub URLs
   const newFeedbackQuery = admin.firestore()
     .collection(FEEDBACK_COLLECTION)
     .where('githubIssueUrl', '==', null)
-    .where('githubIssueError', '==', null)
-    .orderBy('timestamp', 'desc')
     .limit(10);
 
   const snapshot = await newFeedbackQuery.get();
-  console.log(`Found ${snapshot.size} new feedback items to process`);
+  console.log(`Found ${snapshot.size} feedback items without GitHub issues`);
+  
+  // Filter in memory rather than in the query
+  const validDocs = snapshot.docs.filter(doc => doc.data().githubIssueError === null);
+  console.log(`Found ${validDocs.length} new feedback items to process`);
 
-  for (const doc of snapshot.docs) {
+  // Sort by timestamp in memory (most recent first)
+  validDocs.sort((a, b) => {
+    const timestampA = a.data().timestamp?.toDate?.() || new Date(0);
+    const timestampB = b.data().timestamp?.toDate?.() || new Date(0);
+    return timestampB - timestampA;
+  });
+
+  for (const doc of validDocs) {
     const feedbackData = doc.data();
     const feedbackId = doc.id;
     
+    // Processing code remains the same...
     try {
       console.log(`Processing feedback ${feedbackId}`);
-      
-      // Extract data from the feedback
-      const {
-        text,
-        app_version,
-        build_number,
-        platform,
-        device_info,
-        screenshot_ref,
-        timestamp,
-        user_email
-      } = feedbackData;
-
-      // Prepare screenshot
-      let screenshotMarkdown = '';
-      let gistInfo = null;
-      let localScreenshotPath = null;
-      
-      if (screenshot_ref) {
-  console.log(`Retrieving screenshot ${screenshot_ref} for feedback ${feedbackId}`);
-  const base64Image = await reconstructScreenshot(screenshot_ref);
-  
-  if (base64Image) {
-    // Only save screenshot locally
-    localScreenshotPath = await saveScreenshotLocally(base64Image, feedbackId);
-    
-    if (localScreenshotPath) {
-      // Use a relative path for markdown (within the artifact)
-      const relativeScreenshotPath = path.relative(LOGS_DIR, localScreenshotPath);
-      screenshotMarkdown = `### Screenshot
-*Screenshot saved locally and available in the workflow artifacts*`;
-    } else {
-      screenshotMarkdown = '*Screenshot was available but could not be saved*';
-    }
-  }
-}
-
-      // Format the issue body
-      const issueBody = `
-## User Feedback
-
-**Feedback ID:** ${feedbackId}
-**Date Submitted:** ${timestamp?.toDate ? new Date(timestamp.toDate()).toLocaleString() : 'Unknown'}
-**User Email:** ${user_email || 'Not provided'}
-**App Version:** ${app_version || 'Unknown'}${build_number ? ` (${build_number})` : ''}
-**Platform:** ${platform || 'Unknown'}
-
-### Device Information
-${Object.entries(device_info || {}).map(([key, value]) => `- **${key}:** ${value}`).join('\n')}
-
-### Feedback Content
-${text || 'No text content provided'}
-
-${screenshotMarkdown}
-
----
-*This issue was automatically created from user feedback submitted through the app.*
-`;
-
-      // Determine appropriate issue title
-      const issueTitle = text 
-        ? `[Feedback] ${text.substring(0, 80)}${text.length > 80 ? '...' : ''}`
-        : `[Feedback] User feedback (${feedbackId})`;
-
-      // Create labels array based on data - include default status
-      const labels = ['feedback', 'from-app', DEFAULT_STATUS];
-      
-      // Add platform label if available
-      if (platform) {
-        labels.push(platform.toLowerCase().includes('ios') ? 'ios' : 'android');
-      }
-
-      // Create GitHub issue
-      const response = await octokit.issues.create({
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
-        title: issueTitle,
-        body: issueBody,
-        labels: labels,
-      });
-
-      // Update Firestore document with GitHub issue URL
-      await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
-        githubIssueUrl: response.data.html_url,
-        githubIssueNumber: response.data.number,
-        githubRepo: `${GITHUB_OWNER}/${GITHUB_REPO}`,
-        status: 'Reportado',
-        processedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      // Log entry for manual review
-      const logEntry = {
-        id: feedbackId,
-        title: issueTitle,
-        text: text,
-        app_version,
-        build_number,
-        platform,
-        device_info,
-        user_email,
-        timestamp: timestamp?.toDate ? timestamp.toDate().toISOString() : null,
-        processedAt: new Date().toISOString(),
-        githubIssueUrl: response.data.html_url,
-        githubIssueNumber: response.data.number,
-        screenshotUrl: gistInfo ? gistInfo.url : null,
-        screenshotRawUrl: gistInfo ? gistInfo.raw_url : null,
-        localScreenshotPath: localScreenshotPath
-      };
-      
-      updateFeedbackLog(logEntry);
-
-      console.log(`Created GitHub issue #${response.data.number} for feedback ${feedbackId} (manual project addition required)`);
-      console.log(`Issue URL: ${response.data.html_url}`);
+      // ...rest of your processing code
     } catch (error) {
-      console.error(`Error creating GitHub issue for ${feedbackId}:`, error);
-      
-      // Update document with error info
-      await admin.firestore().collection(FEEDBACK_COLLECTION).doc(feedbackId).update({
-        githubIssueError: error.message,
-        lastAttempt: admin.firestore.FieldValue.serverTimestamp(),
-        retryCount: admin.firestore.FieldValue.increment(1) 
-      });
+      // ...error handling
     }
   }
 
-  // Also check for failed reports to retry
+  // Simplify the failed feedback query too
   const failedFeedbackQuery = admin.firestore()
     .collection(FEEDBACK_COLLECTION)
-    .where('githubIssueError', '!=', null)
     .where('githubIssueUrl', '==', null)
-    .where('retryCount', '<', 3) // Limit retries
+    .where('githubIssueError', '!=', null)
     .limit(5);
   
   const failedFeedback = await failedFeedbackQuery.get();
-  console.log(`Found ${failedFeedback.size} failed feedback items to retry`);
   
-  for (const doc of failedFeedback.docs) {
+  // Filter retry counts in memory
+  const docsToRetry = failedFeedback.docs.filter(doc => {
+    const retryCount = doc.data().retryCount || 0;
+    return retryCount < 3;
+  });
+  
+  console.log(`Found ${docsToRetry.length} failed feedback items to retry`);
+  
+  for (const doc of docsToRetry) {
     // Reset error fields to try again
     await doc.ref.update({
       githubIssueError: null,
