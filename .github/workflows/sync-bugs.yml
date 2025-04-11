@@ -8,8 +8,7 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: read
-  repository-projects: write
+  gists: write  # For screenshot uploads
 
 jobs:
   sync-feedback:
@@ -32,27 +31,18 @@ jobs:
           echo "${{ secrets.FIREBASE_SERVICE_ACCOUNT }}" | base64 -d > /tmp/credentials/service-account.json
           ls -la /tmp/credentials/service-account.json
       
-      - name: Debug GitHub permissions
-        run: |
-          echo "GitHub Token Permissions:"
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" https://api.github.com/rate_limit
-          
-      - name: List available projects
-        run: |
-          echo "Organisation Projects:"
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/orgs/${{ env.GITHUB_OWNER }}/projects" || echo "Failed to fetch org projects"
-          echo "\n\nRepository Projects:"
-          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ env.GITHUB_OWNER }}/${{ env.GITHUB_REPO }}/projects" || echo "Failed to fetch repo projects"
-        env:
-          GITHUB_OWNER: 'dnre'
-          GITHUB_REPO: 'APP'
-          
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           FIREBASE_SERVICE_ACCOUNT_PATH: /tmp/credentials/service-account.json
-          GITHUB_OWNER: 'judinilson'  # Changed from 'dnre'
+          GITHUB_OWNER: 'judinilson'
           GITHUB_REPO: 'APP'
-          PROJECT_NAME: 'Dnre-bug-tracking'
-          PROJECT_NUMBER: 7  # Added this
+          
+      - name: Upload Feedback Logs
+        if: always()  # Run even if previous steps failed
+        uses: actions/upload-artifact@v3
+        with:
+          name: feedback-logs
+          path: feedback_logs/
+          retention-days: 30
