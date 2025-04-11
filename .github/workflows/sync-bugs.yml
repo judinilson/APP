@@ -2,7 +2,7 @@ name: Sync Feedback to GitHub Issues
 
 on:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '0 */1 * * *'
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,16 @@ jobs:
           
       - name: Install specific dependencies
         run: npm install @octokit/rest firebase-admin
-        
+
+      - name: Validate service account format
+        run: |
+          # Extract first 10 and last 10 characters to avoid printing the whole key
+          FIRST_10=$(echo ${{ secrets.FIREBASE_SERVICE_ACCOUNT }} | cut -c1-10)
+          LAST_10=$(echo ${{ secrets.FIREBASE_SERVICE_ACCOUNT }} | rev | cut -c1-10 | rev)
+          echo "First 10 chars: $FIRST_10 ... Last 10 chars: $LAST_10"
+          # Test if it's valid base64
+          echo ${{ secrets.FIREBASE_SERVICE_ACCOUNT }} | base64 -d | head -c 20
+            
       - name: Sync Feedback to Issues
         run: node scripts/sync-firestore-to-github.js
         env:
