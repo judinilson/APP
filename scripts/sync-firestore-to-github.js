@@ -62,105 +62,61 @@ const DEFAULT_STATUS = 'status:reportado';
 // Function to get project ID from project name - checks both org and repo projects
 async function getProjectId() {
   try {
-    console.log(`Looking for project "${PROJECT_NAME}" in organization "${GITHUB_OWNER}" or repository "${GITHUB_OWNER}/${GITHUB_REPO}"`);
+    console.log(`Looking for project #${PROJECT_NUMBER} for user "${GITHUB_OWNER}"`);
     
-    // First try organization projects
+    // Try direct API request for the specific project (by number)
     try {
-      const { data: orgProjects } = await octokit.rest.projects.listForOrg({
-        org: GITHUB_OWNER,
-        per_page: 100
+      const { data: project } = await octokit.request('GET /users/{username}/projects/{project_number}', {
+        username: GITHUB_OWNER,
+        project_number: PROJECT_NUMBER
       });
       
-      const orgProject = orgProjects.find(p => p.name === PROJECT_NAME);
-      if (orgProject) {
-        console.log(`Found organization project: ${orgProject.name}`);
-        return {
-          id: orgProject.id,
-          number: orgProject.number,
-          type: 'organization'
-        };
-      }
-    } catch (orgError) {
-      console.log(`Note: Could not fetch organization projects: ${orgError.message}`);
+      console.log(`Found user project: ${project.name}`);
+      return {
+        id: project.id,
+        number: project.number,
+        type: 'user'
+      };
+    } catch (error) {
+      console.error(`Error getting specific project: ${error.message}`);
     }
     
-    // Then try repository projects
-    try {
-      const { data: repoProjects } = await octokit.rest.projects.listForRepo({
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
-        per_page: 100
-      });
-      
-      const repoProject = repoProjects.find(p => p.name === PROJECT_NAME);
-      if (repoProject) {
-        console.log(`Found repository project: ${repoProject.name}`);
-        return {
-          id: repoProject.id,
-          number: repoProject.number,
-          type: 'repository'
-        };
-      }
-    } catch (repoError) {
-      console.log(`Note: Could not fetch repository projects: ${repoError.message}`);
-    }
-    
-    // Try to list all projects for the authenticated user as fallback
+    // Fallback to listing all user projects
     try {
       const { data: userProjects } = await octokit.rest.projects.listForUser({
-        username: process.env.GITHUB_ACTOR || GITHUB_OWNER,
+        username: GITHUB_OWNER,
         per_page: 100
       });
       
-      const userProject = userProjects.find(p => p.name === PROJECT_NAME);
-      if (userProject) {
-        console.log(`Found user project: ${userProject.name}`);
+      console.log("Available projects for user:");
+      userProjects.forEach(p => console.log(`- #${p.number}: ${p.name}`));
+      
+      // First try by number
+      const projectByNumber = userProjects.find(p => p.number === PROJECT_NUMBER);
+      if (projectByNumber) {
+        console.log(`Found user project by number: ${projectByNumber.name}`);
         return {
-          id: userProject.id,
-          number: userProject.number,
+          id: projectByNumber.id,
+          number: projectByNumber.number,
+          type: 'user'
+        };
+      }
+      
+      // Then try by name
+      const projectByName = userProjects.find(p => p.name === PROJECT_NAME);
+      if (projectByName) {
+        console.log(`Found user project by name: ${projectByName.name}`);
+        return {
+          id: projectByName.id,
+          number: projectByName.number,
           type: 'user'
         };
       }
     } catch (userError) {
-      console.log(`Note: Could not fetch user projects: ${userError.message}`);
+      console.error(`Error listing user projects: ${userError.message}`);
     }
     
-    // List all projects the user can see (up to 100)
-    console.log("Could not find the project. Here are the projects available:");
-    
-    try {
-      const { data: orgProjects } = await octokit.rest.projects.listForOrg({
-        org: GITHUB_OWNER,
-        per_page: 100
-      });
-      
-      if (orgProjects.length > 0) {
-        console.log("Organization projects:");
-        orgProjects.forEach(p => console.log(`- ${p.name}`));
-      } else {
-        console.log("No organization projects found.");
-      }
-    } catch (error) {
-      console.log("Could not list organization projects.");
-    }
-    
-    try {
-      const { data: repoProjects } = await octokit.rest.projects.listForRepo({
-        owner: GITHUB_OWNER,
-        repo: GITHUB_REPO,
-        per_page: 100
-      });
-      
-      if (repoProjects.length > 0) {
-        console.log("Repository projects:");
-        repoProjects.forEach(p => console.log(`- ${p.name}`));
-      } else {
-        console.log("No repository projects found.");
-      }
-    } catch (error) {
-      console.log("Could not list repository projects.");
-    }
-    
+    console.error(`Could not find project #${PROJECT_NUMBER} or "${PROJECT_NAME}" for user "${GITHUB_OWNER}"`);
     return null;
   } catch (error) {
     console.error('Error getting project ID:', error);
