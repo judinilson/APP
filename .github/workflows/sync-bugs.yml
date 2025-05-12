@@ -1,7 +1,7 @@
 name: Sync Feedback to GitHub Issues
 on:
   schedule:
-    - cron: '0 */1 * * *'  # Runs every hour
+    - cron: '0 5 * * *' # daily at 5am
   workflow_dispatch:        # Allows manual triggering
 
 permissions:
